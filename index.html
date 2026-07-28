@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Incassi">
+  <meta name="theme-color" content="#101418">
+  <title>Registro incassi</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <button id="btn-date" type="button" aria-label="Cambia giorno">oggi</button>
+    <nav>
+      <button id="tab-registro" type="button" class="tab active">Registro</button>
+      <button id="tab-mese" type="button" class="tab">Mese</button>
+    </nav>
+    <button id="btn-trash" type="button" aria-label="Cestino">🗑</button>
+  </header>
+
+  <div id="banner" hidden></div>
+  <div id="export-reminder" hidden>È da un po' che non fai un export: i dati vivono solo su questo telefono.</div>
+
+  <main>
+    <section id="view-registro">
+      <div id="counter-85k">
+        <div class="counter-text"><span id="counter-value"></span> <span class="counter-label">dichiarato · soglia 85.000 €</span></div>
+        <div class="counter-bar"><div id="counter-fill"></div></div>
+      </div>
+
+      <div id="day-totals">
+        <div class="chip" data-ch="B"><span class="ch">B</span><span id="tot-B">0,00 €</span></div>
+        <div class="chip" data-ch="S"><span class="ch">S</span><span id="tot-S">0,00 €</span></div>
+        <div class="chip" data-ch="R"><span class="ch">R</span><span id="tot-R">0,00 €</span></div>
+        <div class="chip" data-ch="C"><span class="ch">C</span><span id="tot-C">0,00 €</span></div>
+        <div class="chip total"><span class="ch">Giorno</span><span id="tot-day">0,00 €</span></div>
+      </div>
+
+      <ul id="day-list" aria-label="Incassi del giorno"></ul>
+
+      <div id="entry-panel">
+        <div id="amount-display">&nbsp;</div>
+        <div id="keypad">
+          <button type="button" data-k="7">7</button>
+          <button type="button" data-k="8">8</button>
+          <button type="button" data-k="9">9</button>
+          <button type="button" data-k="4">4</button>
+          <button type="button" data-k="5">5</button>
+          <button type="button" data-k="6">6</button>
+          <button type="button" data-k="1">1</button>
+          <button type="button" data-k="2">2</button>
+          <button type="button" data-k="3">3</button>
+          <button type="button" data-k=",">,</button>
+          <button type="button" data-k="0">0</button>
+          <button type="button" data-k="del" aria-label="Cancella cifra">⌫</button>
+        </div>
+        <div id="channel-keys">
+          <button type="button" data-ch="B">B<small>bancomat</small></button>
+          <button type="button" data-ch="S">S<small>satispay</small></button>
+          <button type="button" data-ch="R">R<small>ricevuta</small></button>
+          <button type="button" data-ch="C">C<small>cash</small></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-mese" hidden></section>
+  </main>
+
+  <div id="toast" hidden><span id="toast-text"></span><button id="toast-undo" type="button">Annulla</button></div>
+
+  <dialog id="edit-sheet">
+    <h2>Modifica riga</h2>
+    <label>Importo <input id="edit-amount" type="text" inputmode="decimal"></label>
+    <label>Canale
+      <select id="edit-channel">
+        <option value="B">B — bancomat</option>
+        <option value="S">S — satispay</option>
+        <option value="R">R — contante con ricevuta</option>
+        <option value="C">C — cash</option>
+      </select>
+    </label>
+    <label>Giorno <input id="edit-date" type="date"></label>
+    <div class="sheet-actions">
+      <button id="edit-delete" type="button" class="danger">Cestina</button>
+      <span class="spacer"></span>
+      <button id="edit-cancel" type="button">Chiudi</button>
+      <button id="edit-save" type="button" class="primary">Salva</button>
+    </div>
+  </dialog>
+
+  <dialog id="trash-sheet">
+    <h2>Cestino</h2>
+    <ul id="trash-list"></ul>
+    <div class="sheet-actions">
+      <span class="spacer"></span>
+      <button id="trash-close" type="button">Chiudi</button>
+    </div>
+  </dialog>
+
+  <input id="date-picker" type="date" hidden>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
