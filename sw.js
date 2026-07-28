@@ -2,7 +2,7 @@
 // l'app funziona integralmente offline. Per pubblicare una nuova
 // versione basta incrementare VERSION.
 
-const VERSION = 'ri-v4';
+const VERSION = 'ri-v5';
 const ASSETS = [
   '.',
   'index.html',
@@ -37,6 +37,8 @@ self.addEventListener('activate', (ev) => {
 
 self.addEventListener('fetch', (ev) => {
   if (ev.request.method !== 'GET') return;
+  // La diagnostica deve dire la verità sul momento: mai dalla cache.
+  if (new URL(ev.request.url).pathname.endsWith('/diag.html')) return;
   ev.respondWith(
     caches.match(ev.request, { ignoreSearch: true }).then(
       (hit) => hit ?? fetch(ev.request).then((res) => {

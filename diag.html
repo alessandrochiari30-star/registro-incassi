@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Diagnostica memoria — Registro incassi</title>
+<style>
+  :root { color-scheme: dark light; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0; padding: 16px 14px 40px;
+    background: #171015; color: #F2E7EB; line-height: 1.45;
+  }
+  @media (prefers-color-scheme: light) { body { background: #FAF6F5; color: #23181E; } }
+  h1 { font-family: Georgia, serif; font-size: 22px; font-weight: 400; margin: 0 0 4px; }
+  p.sub { margin: 0 0 18px; font-size: 13px; opacity: .7; }
+  section { border: 1px solid rgba(128,128,128,.35); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; opacity: .65; margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 15px; border-bottom: 1px solid rgba(128,128,128,.15); }
+  .row:last-child { border-bottom: none; }
+  .row span:first-child { opacity: .75; }
+  .row span:last-child { font-weight: 600; text-align: right; }
+  .ok { color: #38b87c; }
+  .ko { color: #e8615f; }
+  .warn { color: #d99b1c; }
+  .verdict { font-size: 17px; font-weight: 600; padding: 14px; border-radius: 12px; margin-bottom: 14px; }
+  .verdict.ok { background: rgba(56,184,124,.15); border: 1px solid #38b87c; }
+  .verdict.ko { background: rgba(232,97,95,.15); border: 1px solid #e8615f; }
+  .verdict.warn { background: rgba(217,155,28,.15); border: 1px solid #d99b1c; }
+  button {
+    font: inherit; font-weight: 600; width: 100%; min-height: 50px;
+    border-radius: 12px; border: 1px solid #FF6FA5; background: none;
+    color: inherit; margin-top: 10px; cursor: pointer;
+  }
+  ol { margin: 8px 0 0; padding-left: 22px; font-size: 14px; }
+  li { margin-bottom: 6px; }
+  code { font-size: 13px; opacity: .8; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Diagnostica memoria</h1>
+<p class="sub">Serve a capire se il telefono conserva davvero i dati dell'app. Non tocca gli incassi già registrati.</p>
+
+<div id="verdict" class="verdict warn">Controllo in corso…</div>
+
+<section>
+  <h2>Prova di sopravvivenza</h2>
+  <div id="survival"></div>
+  <button id="btn-mark" type="button">Scrivi marcatore e chiudi Safari</button>
+  <ol>
+    <li>Tocca il bottone qui sopra.</li>
+    <li><b>Chiudi Safari del tutto</b> (scorri in su dal fondo e butta via la scheda).</li>
+    <li>Riapri questa pagina dall'icona sulla Home.</li>
+    <li>Guarda cosa dice questo riquadro.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Cosa c'è in memoria adesso</h2>
+  <div id="storage"></div>
+</section>
+
+<section>
+  <h2>Ambiente</h2>
+  <div id="env"></div>
+</section>
+
+<section>
+  <h2>Dettagli tecnici</h2>
+  <div id="tech"></div>
+</section>
+
+<script>
+const MARK_LS = 'ri-diag-marker';
+const DB_NAME = 'registro-incassi';
+const STORE = 'entries';
+const MARK_DB = 'ri-diag-db';
+
+const el = (id) => document.getElementById(id);
+const row = (label, value, cls) =>
+  `<div class="row"><span>${label}</span><span class="${cls || ''}">${value}</span></div>`;
+
+function ago(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 60) return s + ' secondi fa';
+  if (s < 3600) return Math.round(s / 60) + ' minuti fa';
+  return Math.round(s / 3600) + ' ore fa';
+}
+
+// --- localStorage ---
+function lsTest() {
+  try {
+    localStorage.setItem('ri-diag-test', '1');
+    const back = localStorage.getItem('ri-diag-test');
+    localStorage.removeItem('ri-diag-test');
+    return back === '1' ? 'funziona' : 'scrive ma non rilegge';
+  } catch (e) {
+    return 'BLOCCATO (' + e.name + ')';
+  }
+}
+
+// --- IndexedDB ---
+function openDB(name, store) {
+  return new Promise((res, rej) => {
+    let req;
+    try { req = indexedDB.open(name, 1); } catch (e) { return rej(e); }
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(store)) req.result.createObjectStore(store, { keyPath: 'id' });
+    };
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error || new Error('open error'));
+    req.onblocked = () => rej(new Error('bloccato'));
+    setTimeout(() => rej(new Error('timeout')), 4000);
+  });
+}
+
+function idbCount(db, store) {
+  return new Promise((res, rej) => {
+    try {
+      const r = db.transaction(store).objectStore(store).getAll();
+      r.onsuccess = () => res(r.result.length);
+      r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  });
+}
+
+function idbPut(db, store, obj) {
+  return new Promise((res, rej) => {
+    try {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).put(obj);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error || new Error('abort'));
+    } catch (e) { rej(e); }
+  });
+}
+
+function idbGet(db, store, id) {
+  return new Promise((res, rej) => {
+    try {
+      const r = db.transaction(store).objectStore(store).get(id);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  });
+}
+
+async function run() {
+  // ---------- prova di sopravvivenza ----------
+  let markLS = null, markDB = null, markErr = null;
+  try { markLS = JSON.parse(localStorage.getItem(MARK_LS) || 'null'); } catch { markLS = null; }
+  let diagDb = null;
+  try {
+    diagDb = await openDB(MARK_DB, 'marks');
+    markDB = await idbGet(diagDb, 'marks', 'mark');
+  } catch (e) { markErr = e.name + ': ' + e.message; }
+
+  let sHtml = '';
+  let verdict = '', vclass = 'warn';
+  if (!markLS && !markDB) {
+    sHtml += row('Marcatore precedente', 'nessuno — premi il bottone', 'warn');
+    verdict = 'Prova non ancora fatta. Segui i 4 passi qui sotto.';
+    vclass = 'warn';
+  } else {
+    const okLS = !!markLS, okDB = !!markDB;
+    sHtml += row('Sopravvissuto in localStorage', okLS ? 'SÌ (' + ago(markLS.t) + ')' : 'NO', okLS ? 'ok' : 'ko');
+    sHtml += row('Sopravvissuto in IndexedDB', okDB ? 'SÌ (' + ago(markDB.t) + ')' : 'NO', okDB ? 'ok' : 'ko');
+    if (okLS && okDB) {
+      verdict = 'MEMORIA OK: il telefono conserva i dati. Se l\'app si svuota lo stesso, il problema è altrove.';
+      vclass = 'ok';
+    } else if (okLS || okDB) {
+      verdict = 'MEMORIA A METÀ: una delle due copie non sopravvive. Fammi vedere questa schermata.';
+      vclass = 'warn';
+    } else {
+      verdict = 'MEMORIA CANCELLATA: il telefono butta via tutto alla chiusura. Quasi sempre è la Navigazione Privata di Safari, oppure l\'app non è installata come app vera.';
+      vclass = 'ko';
+    }
+  }
+  if (markErr) sHtml += row('Errore IndexedDB', markErr, 'ko');
+  el('survival').innerHTML = sHtml;
+  el('verdict').textContent = verdict;
+  el('verdict').className = 'verdict ' + vclass;
+
+  // ---------- dati veri dell'app ----------
+  let html = '';
+  let mirror = null;
+  try { mirror = JSON.parse(localStorage.getItem('ri-backup') || 'null'); } catch { mirror = null; }
+  const mirrorN = mirror && Array.isArray(mirror.entries) ? mirror.entries.length : null;
+  html += row('Righe nel mirror (localStorage)', mirrorN === null ? 'nessun dato' : mirrorN, mirrorN ? 'ok' : 'ko');
+  if (mirror && mirror.savedAt) html += row('Ultimo salvataggio mirror', ago(mirror.savedAt));
+  try {
+    const appDb = await openDB(DB_NAME, STORE);
+    const n = await idbCount(appDb, STORE);
+    html += row('Righe in IndexedDB', n, n ? 'ok' : 'ko');
+  } catch (e) {
+    html += row('Righe in IndexedDB', 'ERRORE: ' + e.name, 'ko');
+  }
+  el('storage').innerHTML = html;
+
+  // ---------- ambiente ----------
+  let env = '';
+  const standalone = window.navigator.standalone === true ||
+    window.matchMedia('(display-mode: standalone)').matches;
+  env += row('Aperta come app installata', standalone ? 'SÌ' : 'NO — è una scheda Safari', standalone ? 'ok' : 'ko');
+  env += row('localStorage', lsTest(), lsTest() === 'funziona' ? 'ok' : 'ko');
+  env += row('Cookie abilitati', navigator.cookieEnabled ? 'sì' : 'NO', navigator.cookieEnabled ? 'ok' : 'ko');
+
+  let persisted = 'non supportato';
+  try {
+    if (navigator.storage && navigator.storage.persisted) {
+      persisted = (await navigator.storage.persisted()) ? 'sì' : 'no (best effort)';
+    }
+  } catch (e) { persisted = 'errore'; }
+  env += row('Memoria garantita', persisted, persisted === 'sì' ? 'ok' : 'warn');
+
+  let quotaTxt = 'non disponibile', privateHint = 'non determinabile';
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      const mb = est.quota ? Math.round(est.quota / 1048576) : 0;
+      quotaTxt = mb + ' MB disponibili';
+      privateHint = mb > 0 && mb < 100 ? 'PROBABILE (spazio minuscolo)' : 'improbabile';
+    }
+  } catch (e) { quotaTxt = 'errore'; }
+  env += row('Spazio concesso al sito', quotaTxt);
+  env += row('Navigazione privata', privateHint, privateHint.startsWith('PROBABILE') ? 'ko' : 'ok');
+  el('env').innerHTML = env;
+
+  // ---------- tecnici ----------
+  let tech = '';
+  tech += row('Indirizzo', '<code>' + location.origin + '</code>');
+  tech += row('Percorso', '<code>' + location.pathname + '</code>');
+  const sw = navigator.serviceWorker && navigator.serviceWorker.controller ? 'attivo' : 'non attivo';
+  tech += row('Service worker', sw);
+  tech += row('Browser', '<code>' + navigator.userAgent.slice(0, 90) + '</code>');
+  el('tech').innerHTML = tech;
+}
+
+el('btn-mark').addEventListener('click', async () => {
+  const mark = { id: 'mark', t: Date.now() };
+  let okLS = false, okDB = false, err = '';
+  try { localStorage.setItem(MARK_LS, JSON.stringify(mark)); okLS = true; } catch (e) { err += 'localStorage: ' + e.name + ' '; }
+  try {
+    const db = await openDB(MARK_DB, 'marks');
+    await idbPut(db, 'marks', mark);
+    okDB = true;
+  } catch (e) { err += 'IndexedDB: ' + e.name; }
+  el('btn-mark').textContent = (okLS && okDB)
+    ? 'Marcatore scritto ✓ — ora chiudi Safari del tutto'
+    : 'Scrittura fallita: ' + (err || 'motivo ignoto');
+});
+
+run();
+</script>
+</body>
+</html>
