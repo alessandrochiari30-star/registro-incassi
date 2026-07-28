@@ -93,6 +93,19 @@ header {
   white-space: nowrap;
 }
 #btn-date.not-today { color: var(--accent); border-color: var(--accent); }
+.date-wrap { position: relative; display: flex; }
+/* Trasparente sopra il bottone: riceve il tocco al posto suo.
+   font-size 16px evita lo zoom automatico di iOS al focus. */
+#date-picker {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+}
 nav { display: flex; flex: 1; background: var(--surface); border-radius: 10px; padding: 3px; border: 1px solid var(--hairline); }
 .tab { flex: 1; min-height: 38px; border-radius: 8px; color: var(--ink-2); font-weight: 600; }
 .tab.active { background: var(--surface-2); color: var(--ink); }

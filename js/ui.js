@@ -10,6 +10,9 @@ const THRESHOLD_CENTS = 8_500_000; // 85.000,00 € in centesimi
 
 export function renderDate(dateISO) {
   const btn = $('btn-date');
+  // l'input trasparente sopra il bottone deve già contenere il giorno
+  // corrente quando il picker si apre al tocco
+  $('date-picker').value = dateISO;
   if (dateISO === todayISO()) {
     btn.textContent = 'oggi';
     btn.classList.remove('not-today');

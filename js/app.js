@@ -179,13 +179,12 @@ async function main() {
     if (b && !b.disabled) insert(b.dataset.ch);
   });
 
-  // data
-  $('btn-date').addEventListener('click', () => {
-    const picker = $('date-picker');
-    picker.value = state.currentDate;
-    picker.hidden = false;
-    picker.showPicker?.() ?? picker.click();
-    picker.hidden = true;
+  // data — su iOS il tocco sull'input trasparente apre il picker
+  // nativo da solo; showPicker() serve solo ai browser desktop, dove
+  // il click nel campo non basta. Se lancia, il tocco nativo ha già
+  // fatto il lavoro.
+  $('date-picker').addEventListener('click', () => {
+    try { $('date-picker').showPicker?.(); } catch { /* niente da fare */ }
   });
   $('date-picker').addEventListener('change', () => {
     if ($('date-picker').value) {

@@ -15,7 +15,13 @@
 </head>
 <body>
   <header>
-    <button id="btn-date" type="button" aria-label="Cambia giorno">oggi</button>
+    <!-- L'input date trasparente copre il bottone: il tocco arriva
+         all'input vero e iOS apre il suo picker nativo. Il bottone è
+         solo l'aspetto visivo, l'etichetta accessibile sta sull'input. -->
+    <div class="date-wrap">
+      <button id="btn-date" type="button" tabindex="-1" aria-hidden="true">oggi</button>
+      <input id="date-picker" type="date" aria-label="Cambia giorno">
+    </div>
     <nav>
       <button id="tab-registro" type="button" class="tab active">Registro</button>
       <button id="tab-mese" type="button" class="tab">Mese</button>
@@ -101,8 +107,6 @@
       <button id="trash-close" type="button">Chiudi</button>
     </div>
   </dialog>
-
-  <input id="date-picker" type="date" hidden>
 
   <script type="module" src="js/app.js"></script>
 </body>
