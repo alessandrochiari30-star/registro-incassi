@@ -23,24 +23,39 @@ function shiftMonth(ym, delta) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// Download diretto. L'ancora deve stare nel DOM (alcuni browser
+// ignorano il click su un nodo staccato) e l'URL va revocato dopo,
+// non subito: revocarlo nello stesso istante annulla il download.
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  a.style.display = 'none';
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+  return 'saved';
+}
+
 // Ritorna 'shared' (foglio di condivisione), 'saved' (download
-// diretto) o null se l'utente ha annullato lo share: non è un errore.
+// diretto) o null solo se l'utente ha annullato di sua volontà.
+// Ogni altro rifiuto dello share ripiega sul download: su Android il
+// JSON è spesso un tipo che il sistema non accetta di condividere, e
+// prima quel caso restava muto — il bottone sembrava rotto.
 async function shareFile(filename, content, mime) {
   const file = new File([content], filename, { type: mime });
   if (navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file] });
       return 'shared';
-    } catch {
-      return null; // annullato dall'utente (AbortError): silenzio
+    } catch (err) {
+      if (err?.name === 'AbortError') return null; // annullato: silenzio
+      // altro errore: si continua col download qui sotto
     }
   }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(file);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  return 'saved';
+  return downloadFile(file);
 }
 
 function markExported() {
@@ -48,12 +63,23 @@ function markExported() {
   document.getElementById('export-reminder').hidden = true;
 }
 
-// Conferma discreta a export riuscito; con null (share annullato)
-// non succede niente.
-function confirmExport(outcome) {
+// Conferma discreta a export riuscito; con null (share annullato
+// dall'utente) non succede niente. Un errore vero non resta mai muto.
+async function runExport(filename, content, mime) {
+  let outcome = null;
+  try {
+    outcome = await shareFile(filename, content, mime);
+  } catch (err) {
+    showToast('Export non riuscito (' + (err?.name ?? 'errore') + '). Riprova.', null, 8000);
+    return;
+  }
   if (!outcome) return;
   markExported();
-  showToast(outcome === 'shared' ? 'Export condiviso.' : 'File scaricato.', null, 3500);
+  showToast(
+    outcome === 'shared' ? 'Export condiviso.' : `Scaricato: ${filename}`,
+    null,
+    4000,
+  );
 }
 
 // Messaggi d'errore dell'import, in italiano semplice.
@@ -192,15 +218,15 @@ export function renderMonth(container, state, onDataChanged) {
     renderMonth(container, state, onDataChanged);
   });
 
-  container.querySelector('#exp-month').addEventListener('click', async () => {
+  container.querySelector('#exp-month').addEventListener('click', () => {
     const rows = state.entries.filter((e) => e.date.startsWith(ym + '-'));
-    confirmExport(await shareFile(`incassi-${ym}.csv`, toCSV(rows), 'text/csv'));
+    runExport(`incassi-${ym}.csv`, toCSV(rows), 'text/csv');
   });
-  container.querySelector('#exp-all').addEventListener('click', async () => {
-    confirmExport(await shareFile(`incassi-tutti-${todayISO()}.csv`, toCSV(state.entries), 'text/csv'));
+  container.querySelector('#exp-all').addEventListener('click', () => {
+    runExport(`incassi-tutti-${todayISO()}.csv`, toCSV(state.entries), 'text/csv');
   });
-  container.querySelector('#exp-json').addEventListener('click', async () => {
-    confirmExport(await shareFile(`backup-incassi-${todayISO()}.json`, toJSON(state.entries), 'application/json'));
+  container.querySelector('#exp-json').addEventListener('click', () => {
+    runExport(`backup-incassi-${todayISO()}.json`, toJSON(state.entries), 'application/json');
   });
 
   container.querySelector('#imp-json').addEventListener('click', () => fileInput.click());
