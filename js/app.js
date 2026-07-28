@@ -3,7 +3,7 @@
 
 import { parseAmount } from './parser.js';
 import { formatCents, todayISO } from './money.js';
-import { initDB, saveEntry, requestPersistence } from './db.js';
+import { initDB, saveEntry, purgeEntries, requestPersistence } from './db.js';
 import * as ui from './ui.js';
 import { renderMonth } from './month.js';
 
@@ -133,6 +133,46 @@ async function restore(id) {
   refreshRegistro();
 }
 
+// Svuota cestino in due tempi: il primo tocco arma il bottone, il
+// secondo cancella. Nessuna finestra di sistema, e per sbaglio non
+// si cancella niente. Le righe attive non vengono mai toccate.
+async function emptyTrash() {
+  const btn = $('trash-empty');
+  const trashed = state.entries.filter((e) => e.deletedAt != null);
+  if (trashed.length === 0) return;
+
+  if (btn.dataset.armed !== 'si') {
+    btn.dataset.armed = 'si';
+    btn.classList.add('armed');
+    btn.textContent = trashed.length === 1
+      ? 'Tocca di nuovo: cancello 1 riga per sempre'
+      : `Tocca di nuovo: cancello ${trashed.length} righe per sempre`;
+    clearTimeout(emptyTrash.timer);
+    // Se ci ripensa e non tocca più, il bottone si disarma da solo.
+    emptyTrash.timer = setTimeout(() => ui.renderTrash(state.entries, restore), 6000);
+    return;
+  }
+
+  clearTimeout(emptyTrash.timer);
+  const ids = trashed.map((e) => e.id);
+  const remaining = state.entries.filter((e) => e.deletedAt == null);
+  try {
+    await purgeEntries(ids, remaining);
+  } catch {
+    ui.showBanner('ATTENZIONE: svuotamento non riuscito. I dati sono ancora tutti al loro posto.');
+    ui.renderTrash(state.entries, restore);
+    return;
+  }
+  state.entries = remaining;
+  ui.renderTrash(state.entries, restore);
+  refreshRegistro();
+  ui.showToast(
+    ids.length === 1 ? 'Cestino svuotato: 1 riga cancellata.' : `Cestino svuotato: ${ids.length} righe cancellate.`,
+    null,
+    4000,
+  );
+}
+
 // ---------- viste ----------
 
 function showView(name) {
@@ -203,7 +243,11 @@ async function main() {
     ui.renderTrash(state.entries, restore);
     $('trash-sheet').showModal();
   });
-  $('trash-close').addEventListener('click', () => $('trash-sheet').close());
+  $('trash-empty').addEventListener('click', emptyTrash);
+  $('trash-close').addEventListener('click', () => {
+    clearTimeout(emptyTrash.timer);
+    $('trash-sheet').close();
+  });
 
   // tab
   $('tab-registro').addEventListener('click', () => showView('registro'));

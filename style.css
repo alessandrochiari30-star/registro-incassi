@@ -340,6 +340,19 @@ dialog input, dialog select {
   border: 1px solid var(--hairline);
   font-weight: 600;
 }
+/* Svuota cestino: sobrio al primo tocco, pieno e rosso quando è
+   armato — l'azione definitiva deve avere un aspetto diverso. */
+#trash-note { font-size: 13px; color: var(--muted); margin: 10px 0 8px; }
+#trash-empty {
+  width: 100%;
+  min-height: 46px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+#trash-empty.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
+
 /* Ripristino: legge un file, non lo esporta — visivamente a parte. */
 .export-row .import {
   background: none;

@@ -113,6 +113,18 @@ export function renderTrash(entries, onRestore) {
   const rows = entries
     .filter((e) => e.deletedAt != null)
     .sort((a, b) => b.deletedAt - a.deletedAt);
+  // Il bottone di svuotamento riparte sempre dal primo tempo: mai
+  // trovarlo già "armato" riaprendo il cestino.
+  const emptyBtn = $('trash-empty');
+  emptyBtn.hidden = rows.length === 0;
+  emptyBtn.dataset.armed = '';
+  emptyBtn.classList.remove('armed');
+  emptyBtn.textContent = rows.length === 1
+    ? 'Svuota cestino (1 riga)'
+    : `Svuota cestino (${rows.length} righe)`;
+  $('trash-note').textContent = rows.length === 0
+    ? 'Le righe cestinate restano qui finché non le svuoti.'
+    : 'Svuotare cancella per sempre: queste righe non si potranno più ripristinare.';
   if (rows.length === 0) {
     const li = document.createElement('li');
     li.className = 'empty';

@@ -141,6 +141,26 @@ export async function saveAll(entries) {
   throw lastErr;
 }
 
+// Cancellazione definitiva (svuota cestino): toglie gli id indicati e
+// specchia ciò che resta. Read-back di verifica: se una riga è ancora
+// lì il mirror non viene toccato, così la prossima riconciliazione non
+// la resuscita in un insieme incoerente.
+export async function purgeEntries(ids, remaining) {
+  if (!db) db = await open();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const id of ids) store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('transazione annullata'));
+  });
+  const back = await idbGetAll();
+  const superstiti = new Set(back.map((e) => e.id));
+  if (ids.some((id) => superstiti.has(id))) throw new Error('cancellazione incompleta');
+  mirrorWrite(remaining);
+}
+
 export async function requestPersistence() {
   try {
     if (navigator.storage?.persist) return await navigator.storage.persist();
