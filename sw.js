@@ -2,7 +2,7 @@
 // l'app funziona integralmente offline. Per pubblicare una nuova
 // versione basta incrementare VERSION.
 
-const VERSION = 'ri-v1';
+const VERSION = 'ri-v2';
 const ASSETS = [
   '.',
   'index.html',
