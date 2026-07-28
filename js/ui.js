@@ -74,18 +74,24 @@ export function setChannelsEnabled(enabled) {
   for (const b of document.querySelectorAll('#channel-keys button')) b.disabled = !enabled;
 }
 
+// Toast unico dell'app. Con onUndo mostra "Annulla"; senza è una
+// semplice conferma (o un avviso) che sparisce da sola dopo ms.
 let toastTimer = null;
-export function showToast(text, onUndo) {
+export function showToast(text, onUndo = null, ms = 5000) {
   const toast = $('toast');
+  const undo = $('toast-undo');
   $('toast-text').textContent = text;
+  undo.hidden = !onUndo;
   toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toast.hidden = true; }, 5000);
-  $('toast-undo').onclick = () => {
-    clearTimeout(toastTimer);
-    toast.hidden = true;
-    onUndo();
-  };
+  toastTimer = setTimeout(() => { toast.hidden = true; }, ms);
+  undo.onclick = onUndo
+    ? () => {
+        clearTimeout(toastTimer);
+        toast.hidden = true;
+        onUndo();
+      }
+    : null;
 }
 
 export function showBanner(text) {

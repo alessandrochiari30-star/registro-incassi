@@ -140,7 +140,9 @@ function showView(name) {
   $('view-mese').hidden = name !== 'mese';
   $('tab-registro').classList.toggle('active', name === 'registro');
   $('tab-mese').classList.toggle('active', name === 'mese');
-  if (name === 'mese') renderMonth($('view-mese'), state);
+  // refreshRegistro come callback: dopo un import da backup anche il
+  // registro deve ridisegnarsi, non solo la vista mese.
+  if (name === 'mese') renderMonth($('view-mese'), state, refreshRegistro);
 }
 
 function checkExportReminder() {

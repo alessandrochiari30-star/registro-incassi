@@ -327,3 +327,9 @@ dialog input, dialog select {
   border: 1px solid var(--hairline);
   font-weight: 600;
 }
+/* Ripristino: legge un file, non lo esporta — visivamente a parte. */
+.export-row .import {
+  background: none;
+  border: 1px dashed var(--accent);
+  color: var(--accent-ink);
+}

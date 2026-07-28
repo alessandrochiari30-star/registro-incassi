@@ -47,6 +47,17 @@ function idbPut(entry) {
   });
 }
 
+function idbPutAll(entries) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const e of entries) store.put(e);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('transazione annullata'));
+  });
+}
+
 function mirrorRead() {
   try {
     const raw = localStorage.getItem(MIRROR_KEY);
@@ -105,6 +116,28 @@ export async function saveEntry(entry, allEntries) {
   }
   // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
   try { mirrorWrite(allEntries); } catch { /* niente da fare */ }
+  throw lastErr;
+}
+
+// Scrittura in blocco (import da backup): tutte le righe in una sola
+// transazione, read-back di conteggio, poi mirror completo. Stesso
+// patto di saveEntry: se fallisce tutto, lancia e il chiamante segnala.
+export async function saveAll(entries) {
+  if (!db) db = await open();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await idbPutAll(entries);
+      const back = await idbGetAll();
+      if (back.length < entries.length) throw new Error('read-back incompleto');
+      mirrorWrite(entries);
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
+  try { mirrorWrite(entries); } catch { /* niente da fare */ }
   throw lastErr;
 }
 

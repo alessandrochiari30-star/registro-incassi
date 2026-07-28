@@ -5,6 +5,9 @@ import { formatCents, todayISO } from './money.js';
 import { monthStats, yearDeclared, prevMonthDelta } from './totals.js';
 import { dailyBarsSVG, channelBarSVG, thresholdBarSVG } from './chart.js';
 import { toCSV, toJSON } from './exporter.js';
+import { parseBackup, mergeBackup } from './backup.js';
+import { saveAll } from './db.js';
+import { showToast, showBanner } from './ui.js';
 
 const THRESHOLD_CENTS = 8_500_000;
 const CH_NAMES = { B: 'Bancomat', S: 'Satispay', R: 'Ricevuta', C: 'Cash' };
@@ -20,14 +23,16 @@ function shiftMonth(ym, delta) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// Ritorna 'shared' (foglio di condivisione), 'saved' (download
+// diretto) o null se l'utente ha annullato lo share: non è un errore.
 async function shareFile(filename, content, mime) {
   const file = new File([content], filename, { type: mime });
   if (navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file] });
-      return true;
+      return 'shared';
     } catch {
-      return false; // annullato dall'utente: non è un errore
+      return null; // annullato dall'utente (AbortError): silenzio
     }
   }
   const a = document.createElement('a');
@@ -35,7 +40,7 @@ async function shareFile(filename, content, mime) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
-  return true;
+  return 'saved';
 }
 
 function markExported() {
@@ -43,7 +48,65 @@ function markExported() {
   document.getElementById('export-reminder').hidden = true;
 }
 
-export function renderMonth(container, state) {
+// Conferma discreta a export riuscito; con null (share annullato)
+// non succede niente.
+function confirmExport(outcome) {
+  if (!outcome) return;
+  markExported();
+  showToast(outcome === 'shared' ? 'Export condiviso.' : 'File scaricato.', null, 3500);
+}
+
+// Messaggi d'errore dell'import, in italiano semplice.
+const IMPORT_ERRORS = {
+  json: 'Non riesco a leggere questo file. Controlla di aver scelto il file di backup giusto (finisce con .json).',
+  formato: 'Questo file non sembra un backup di Registro incassi.',
+  righe: 'Il file sembra danneggiato: per sicurezza non ho importato niente. Prova con un altro backup.',
+};
+
+function importMessage(added, existing) {
+  const rec = added === 1 ? '1 riga ripristinata' : `${added} righe ripristinate`;
+  if (existing === 0) return `Backup caricato: ${rec}.`;
+  const pres = existing === 1 ? '1 era già presente' : `${existing} erano già presenti`;
+  return `Backup caricato: ${rec}, ${pres}.`;
+}
+
+// Legge il file scelto, valida, fonde e salva. Ogni esito ha un
+// messaggio; lo schermo si aggiorna solo a salvataggio riuscito.
+async function importBackupFile(file, container, state, onDataChanged) {
+  let text = '';
+  try {
+    text = await file.text();
+  } catch {
+    showToast(IMPORT_ERRORS.json, null, 8000);
+    return;
+  }
+  const parsed = parseBackup(text);
+  if (!parsed.ok) {
+    showToast(IMPORT_ERRORS[parsed.error], null, 8000);
+    return;
+  }
+  if (parsed.entries.length === 0) {
+    showToast('Il file è un backup valido ma non contiene righe.', null, 8000);
+    return;
+  }
+  const { entries, added, existing } = mergeBackup(state.entries, parsed.entries);
+  if (added === 0) {
+    showToast('Niente da ripristinare: le righe del backup sono già tutte qui.', null, 8000);
+    return;
+  }
+  try {
+    await saveAll(entries);
+  } catch {
+    showBanner('ATTENZIONE: salvataggio non riuscito. Non chiudere l\'app e fai subito un export dei dati.');
+    return;
+  }
+  state.entries = entries;
+  onDataChanged?.();
+  renderMonth(container, state, onDataChanged);
+  showToast(importMessage(added, existing), null, 8000);
+}
+
+export function renderMonth(container, state, onDataChanged) {
   const ym = state.monthShown;
   const s = monthStats(state.entries, ym);
   const { deltaPct } = prevMonthDelta(state.entries, ym);
@@ -105,27 +168,46 @@ export function renderMonth(container, state) {
         <button id="exp-month" type="button">Esporta questo mese (CSV)</button>
         <button id="exp-all" type="button">Esporta tutto (CSV)</button>
         <button id="exp-json" type="button">Backup completo (JSON)</button>
+        <button id="imp-json" type="button" class="import">Ripristina da backup</button>
       </div>
     </div>
   `;
 
+  // Input file separato dal bottone. Accept largo apposta: iOS Safari
+  // è capriccioso col mime dei .json salvati da Mail/File (a volte li
+  // marca text/plain), quindi estensione + i due mime coprono i casi
+  // reali; il parser scarta comunque tutto ciò che non è un backup.
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.json,application/json,text/json,text/plain';
+  fileInput.hidden = true;
+  container.append(fileInput);
+
   container.querySelector('#m-prev').addEventListener('click', () => {
     state.monthShown = shiftMonth(ym, -1);
-    renderMonth(container, state);
+    renderMonth(container, state, onDataChanged);
   });
   container.querySelector('#m-next').addEventListener('click', () => {
     state.monthShown = shiftMonth(ym, 1);
-    renderMonth(container, state);
+    renderMonth(container, state, onDataChanged);
   });
 
   container.querySelector('#exp-month').addEventListener('click', async () => {
     const rows = state.entries.filter((e) => e.date.startsWith(ym + '-'));
-    if (await shareFile(`incassi-${ym}.csv`, toCSV(rows), 'text/csv')) markExported();
+    confirmExport(await shareFile(`incassi-${ym}.csv`, toCSV(rows), 'text/csv'));
   });
   container.querySelector('#exp-all').addEventListener('click', async () => {
-    if (await shareFile(`incassi-tutti-${todayISO()}.csv`, toCSV(state.entries), 'text/csv')) markExported();
+    confirmExport(await shareFile(`incassi-tutti-${todayISO()}.csv`, toCSV(state.entries), 'text/csv'));
   });
   container.querySelector('#exp-json').addEventListener('click', async () => {
-    if (await shareFile(`backup-incassi-${todayISO()}.json`, toJSON(state.entries), 'application/json')) markExported();
+    confirmExport(await shareFile(`backup-incassi-${todayISO()}.json`, toJSON(state.entries), 'application/json'));
+  });
+
+  container.querySelector('#imp-json').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = ''; // consente di riscegliere lo stesso file
+    if (!file) return;
+    await importBackupFile(file, container, state, onDataChanged);
   });
 }
