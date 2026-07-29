@@ -47,7 +47,16 @@
         <div class="chip total"><span class="ch">Giorno</span><span id="tot-day">0,00 €</span></div>
       </div>
 
-      <ul id="day-list" aria-label="Incassi del giorno"></ul>
+      <!-- Netto della giornata: incassi meno le spese del giorno e la
+           quota giornaliera delle fisse. Tono neutro, è un'informazione
+           non un giudizio. -->
+      <div id="day-net">
+        <span class="lbl">resta oggi</span>
+        <span id="day-net-value">+0,00 €</span>
+        <span id="day-net-detail"></span>
+      </div>
+
+      <ul id="day-list" aria-label="Incassi e spese del giorno"></ul>
 
       <div id="entry-panel">
         <div id="amount-display">&nbsp;</div>
@@ -71,6 +80,7 @@
           <button type="button" data-ch="R">R<small>ricevuta</small></button>
           <button type="button" data-ch="C">C<small>cash</small></button>
         </div>
+        <button id="btn-expense" type="button">− aggiungi una spesa</button>
       </div>
     </section>
 
@@ -96,6 +106,19 @@
       <span class="spacer"></span>
       <button id="edit-cancel" type="button">Chiudi</button>
       <button id="edit-save" type="button" class="primary">Salva</button>
+    </div>
+  </dialog>
+
+  <dialog id="expense-sheet">
+    <h2 id="expense-title">Aggiungi una spesa</h2>
+    <label>Quanto <input id="expense-amount" type="text" inputmode="decimal" placeholder="40"></label>
+    <label>Per cosa <input id="expense-label" type="text" placeholder="spesa, shopping, benzina…"></label>
+    <label>Giorno <input id="expense-date" type="date"></label>
+    <div class="sheet-actions">
+      <button id="expense-delete" type="button" class="danger" hidden>Cancella</button>
+      <span class="spacer"></span>
+      <button id="expense-cancel" type="button">Chiudi</button>
+      <button id="expense-save" type="button" class="primary">Salva</button>
     </div>
   </dialog>
 

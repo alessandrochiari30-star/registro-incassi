@@ -17,3 +17,8 @@ export function todayISO(d = new Date()) {
 export function monthOf(iso) {
   return iso.slice(0, 7);
 }
+
+export function daysInMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
+}

@@ -14,6 +14,9 @@ export function toCSV(entries) {
   return ['data;canale;importo', ...rows].join('\n') + '\n';
 }
 
-export function toJSON(entries) {
-  return JSON.stringify({ exportedAt: new Date().toISOString(), entries }, null, 2);
+// Backup completo: incassi e uscite insieme, cancellate incluse. Le
+// uscite stanno in un campo a parte, così i backup vecchi (che non le
+// avevano) restano leggibili.
+export function toJSON(entries, extras = []) {
+  return JSON.stringify({ exportedAt: new Date().toISOString(), entries, extras }, null, 2);
 }

@@ -1,0 +1,4 @@
+# Artefatti degli strumenti di prova, mai da pubblicare
+.playwright-mcp/
+*.png.tmp
+node_modules/

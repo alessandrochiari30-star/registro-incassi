@@ -3,19 +3,22 @@
 
 import { parseAmount } from './parser.js';
 import { formatCents, todayISO } from './money.js';
-import { initDB, saveEntry, purgeEntries, requestPersistence } from './db.js';
+import { initDB, saveEntry, saveExtra, purgeEntries, requestPersistence } from './db.js';
 import * as ui from './ui.js';
 import { renderMonth } from './month.js';
+import { CH_NAMES, MSG_SAVE_FAILED } from './channels.js';
+import { DEFAULT_EXPENSE_LABEL } from './expenses.js';
 
-const CH_NAMES = { B: 'Bancomat', S: 'Satispay', R: 'Contante con ricevuta', C: 'Cash' };
 const EXPORT_REMINDER_MS = 7 * 24 * 60 * 60 * 1000;
 
 const state = {
   entries: [],
+  extras: [],
   currentDate: todayISO(),
   buffer: '',
   monthShown: todayISO().slice(0, 7),
   editingId: null,
+  editingExpenseId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -26,7 +29,16 @@ async function persist(entry) {
   try {
     await saveEntry(entry, state.entries);
   } catch (err) {
-    ui.showBanner('ATTENZIONE: salvataggio non riuscito. Non chiudere l\'app e fai subito un export dei dati.');
+    ui.showBanner(MSG_SAVE_FAILED);
+    throw err;
+  }
+}
+
+async function persistExtra(extra) {
+  try {
+    await saveExtra(extra, state.extras);
+  } catch (err) {
+    ui.showBanner(MSG_SAVE_FAILED);
     throw err;
   }
 }
@@ -35,7 +47,8 @@ async function persist(entry) {
 
 function refreshRegistro() {
   ui.renderDate(state.currentDate);
-  ui.renderDay(state.entries, state.currentDate, openEdit);
+  ui.renderDay(state.entries, state.extras, state.currentDate, openEdit, openExpense);
+  ui.renderDayNet(state.entries, state.extras, state.currentDate);
   ui.renderCounter(state.entries);
   ui.renderAmount(state.buffer);
   ui.setChannelsEnabled(parseAmount(state.buffer) !== null);
@@ -122,6 +135,64 @@ async function deleteEdit() {
   refreshRegistro();
 }
 
+// ---------- spese variabili ----------
+
+// Stesso foglio per aggiungere e per modificare: con id null si parte
+// dall'importo eventualmente già digitato sul tastierino.
+function openExpense(id = null) {
+  state.editingExpenseId = id;
+  const x = id ? state.extras.find((e) => e.id === id) : null;
+  $('expense-title').textContent = x ? 'Modifica spesa' : 'Aggiungi una spesa';
+  $('expense-amount').value = x
+    ? (x.amountCents / 100).toFixed(2).replace('.', ',')
+    : state.buffer;
+  $('expense-amount').style.borderColor = '';
+  $('expense-label').value = x ? x.label : '';
+  $('expense-date').value = x ? x.date : state.currentDate;
+  $('expense-delete').hidden = !x;
+  $('expense-sheet').showModal();
+}
+
+async function saveExpense() {
+  const cents = parseAmount($('expense-amount').value);
+  const date = $('expense-date').value;
+  if (cents === null || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    $('expense-amount').style.borderColor = 'var(--danger)';
+    return;
+  }
+  const label = $('expense-label').value.trim().slice(0, 40) || DEFAULT_EXPENSE_LABEL;
+  let x = state.extras.find((e) => e.id === state.editingExpenseId);
+  if (x) {
+    x.amountCents = cents;
+    x.label = label;
+    x.date = date;
+  } else {
+    x = {
+      id: crypto.randomUUID(),
+      kind: 'var',
+      label,
+      amountCents: cents,
+      date,
+      createdAt: Date.now(),
+      deletedAt: null,
+    };
+    state.extras.push(x);
+    state.buffer = '';
+  }
+  await persistExtra(x);
+  $('expense-sheet').close();
+  refreshRegistro();
+}
+
+async function deleteExpense() {
+  const x = state.extras.find((e) => e.id === state.editingExpenseId);
+  if (!x) return;
+  x.deletedAt = Date.now();
+  await persistExtra(x);
+  $('expense-sheet').close();
+  refreshRegistro();
+}
+
 // ---------- cestino ----------
 
 async function restore(id) {
@@ -196,8 +267,9 @@ function checkExportReminder() {
 async function main() {
   if (!localStorage.getItem('ri-firstRun')) localStorage.setItem('ri-firstRun', String(Date.now()));
 
-  const { entries, recovered } = await initDB();
+  const { entries, extras, recovered } = await initDB();
   state.entries = entries;
+  state.extras = extras;
   if (recovered) {
     ui.showBanner('Recupero automatico riuscito: i dati sono stati ripristinati dalla copia di sicurezza.');
   }
@@ -237,6 +309,12 @@ async function main() {
   $('edit-save').addEventListener('click', saveEdit);
   $('edit-delete').addEventListener('click', deleteEdit);
   $('edit-cancel').addEventListener('click', () => $('edit-sheet').close());
+
+  // spese
+  $('btn-expense').addEventListener('click', () => openExpense(null));
+  $('expense-save').addEventListener('click', saveExpense);
+  $('expense-delete').addEventListener('click', deleteExpense);
+  $('expense-cancel').addEventListener('click', () => $('expense-sheet').close());
 
   // cestino
   $('btn-trash').addEventListener('click', () => {

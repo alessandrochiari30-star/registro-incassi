@@ -5,8 +5,8 @@ PWA per registrare gli incassi del salone dal telefono: si digita l'importo e si
 ## Sviluppo
 
 ```
-npm test          # unit test (node --test), nessuna dipendenza
-node tools/..     # le icone si rigenerano con tools/make-icons.ps1
+npm test                                    # unit test (node --test), nessuna dipendenza
+powershell -File tools/make-icons.ps1       # rigenera le icone da tools/icon.svg
 ```
 
 Per provare in locale serve un server statico qualsiasi sulla cartella del progetto (i moduli ES non funzionano da `file://`).

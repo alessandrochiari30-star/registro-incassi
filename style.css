@@ -195,6 +195,37 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #day-list .time { color: var(--muted); font-size: 12px; }
 #day-list .empty { justify-content: center; color: var(--muted); border-style: dashed; }
 
+/* Netto di giornata: informazione, non verdetto. Verde quando avanza,
+   grigio quando no — mai rosso allarme. */
+#day-net {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 14px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+#day-net .lbl { text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+#day-net-value { font-size: 17px; font-weight: 700; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#day-net.positive #day-net-value { color: var(--ch-R); }
+#day-net-detail { flex: 1 1 100%; font-size: 11px; }
+
+/* Righe di spesa dentro la lista del giorno */
+#day-list li.out { border-style: dashed; }
+#day-list li.out .amount { font-weight: 500; color: var(--ink-2); }
+.badge[data-ch="X"] { background: var(--surface-2); color: var(--muted); }
+
+#btn-expense {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 6px;
+  border-radius: 10px;
+  border: 1px dashed var(--hairline);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ---------- pannello inserimento ---------- */
 #entry-panel {
   padding: 8px 14px calc(10px + env(safe-area-inset-bottom));
@@ -352,6 +383,105 @@ dialog input, dialog select {
   font-weight: 600;
 }
 #trash-empty.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* ---------- quanto resta ---------- */
+.net-big {
+  font-family: var(--serif);
+  font-size: 32px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.net-big.pos { color: var(--accent-ink); }
+.net-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.net-rows { margin-top: 10px; font-size: 13px; }
+.net-rows div { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--hairline); }
+.net-rows b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.fix-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; margin-top: 12px; }
+.fix-row label { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+/* font-size 16px: sotto, iOS zooma al focus */
+.fix-row input {
+  padding: 10px;
+  font-size: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.fix-row button {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  font-weight: 600;
+}
+.exp-list { list-style: none; margin-top: 10px; font-size: 13px; }
+.exp-list li { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; color: var(--ink-2); }
+.exp-list b { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ---------- grafico giornaliero toccabile ---------- */
+/* Ogni colonna è un bersaglio a tutta altezza: il dito non deve
+   centrare una barra sottile. Il giorno scelto si accende con una
+   fascia di sfondo, non solo col colore della barra. */
+.day-col { cursor: pointer; }
+.day-col .bar { fill: var(--accent); }
+.day-col .lbl { fill: var(--muted); }
+.day-col .hit { fill: transparent; pointer-events: all; }
+.day-col .lbl-sel, .day-col .tick { display: none; }
+/* Giorno scelto: trattino sotto l'asse + numero acceso. Nessun
+   riempimento a tutta altezza, che si leggerebbe come una barra. */
+.day-col.sel .tick { display: block; fill: var(--accent); }
+.day-col.sel .bar { fill: var(--accent-ink); }
+.day-col.sel .lbl, .day-col.near .lbl { display: none; }
+.day-col.sel .lbl-sel { display: block; fill: var(--accent); font-weight: 700; }
+.day-readout {
+  margin-top: 8px;
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- zona pericolosa (azzeramento totale) ---------- */
+/* Deve sembrare un'altra cosa rispetto al resto della schermata:
+   bordo rosso, passi numerati, tasto spento finché i lucchetti non
+   cadono uno per uno. */
+.danger-zone { border-color: var(--danger); }
+.danger-zone h3 { color: var(--danger); }
+.dz-note { font-size: 13px; color: var(--ink-2); margin-bottom: 12px; }
+.dz-steps { list-style: none; display: grid; gap: 12px; }
+.dz-steps li { display: grid; gap: 6px; }
+.dz-steps label { font-size: 13px; color: var(--ink-2); }
+.dz-state { font-size: 12px; color: var(--muted); }
+#dz-backup {
+  min-height: 48px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  font-weight: 600;
+}
+/* font-size 16px: sotto, iOS zooma da solo al focus. */
+#dz-phrase {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.dz-wipe {
+  min-height: 48px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+.dz-wipe:disabled { opacity: 0.4; cursor: default; }
+.dz-wipe.armed { background: var(--danger); color: #fff; }
 
 /* Ripristino: legge un file, non lo esporta — visivamente a parte. */
 .export-row .import {

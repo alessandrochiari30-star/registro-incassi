@@ -3,6 +3,8 @@
 // Regola di sicurezza: il risultato non è mai più piccolo della copia
 // più grande — mai sovrascrivere dati con un insieme ridotto.
 
+import { CHANNELS } from './channels.js';
+
 export function reconcile(idbEntries, mirrorEntries) {
   const idb = idbEntries ?? [];
   const mirror = mirrorEntries ?? [];
@@ -31,10 +33,25 @@ function isValidEntry(e) {
     && typeof e.id === 'string' && e.id.length > 0
     && typeof e.date === 'string' && DATE_RE.test(e.date)
     && Number.isInteger(e.amountCents) && e.amountCents >= 0
-    && ['B', 'S', 'R', 'C'].includes(e.channel)
+    && CHANNELS.includes(e.channel)
     && typeof e.createdAt === 'number' && Number.isFinite(e.createdAt)
     && (e.deletedAt === null
       || (typeof e.deletedAt === 'number' && Number.isFinite(e.deletedAt)));
+}
+
+// Una uscita: fissa (nessuna data, vale ogni mese) o variabile
+// (legata a un giorno). Il campo 'extras' non c'era nei primi backup:
+// se manca, il file resta valido e semplicemente non porta uscite.
+function isValidExtra(x) {
+  return x !== null && typeof x === 'object'
+    && typeof x.id === 'string' && x.id.length > 0
+    && (x.kind === 'fixed' || x.kind === 'var')
+    && typeof x.label === 'string'
+    && Number.isInteger(x.amountCents) && x.amountCents >= 0
+    && (x.kind === 'fixed' ? (x.date === null || x.date === undefined) : DATE_RE.test(x.date))
+    && typeof x.createdAt === 'number' && Number.isFinite(x.createdAt)
+    && (x.deletedAt === null
+      || (typeof x.deletedAt === 'number' && Number.isFinite(x.deletedAt)));
 }
 
 // Legge il testo di un file di backup e valida tutto.
@@ -56,9 +73,12 @@ export function parseBackup(text) {
     || typeof data.exportedAt !== 'string' || !Array.isArray(data.entries)) {
     return { ok: false, error: 'formato' };
   }
-  const badRows = data.entries.filter((e) => !isValidEntry(e)).length;
+  const extras = data.extras ?? [];
+  if (!Array.isArray(extras)) return { ok: false, error: 'formato' };
+  const badRows = data.entries.filter((e) => !isValidEntry(e)).length
+    + extras.filter((x) => !isValidExtra(x)).length;
   if (badRows > 0) return { ok: false, error: 'righe', badRows };
-  return { ok: true, entries: data.entries };
+  return { ok: true, entries: data.entries, extras };
 }
 
 // Fonde le righe importate con quelle presenti: unione per id, il

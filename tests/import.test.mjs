@@ -66,6 +66,50 @@ test('backup valido senza righe -> ok con lista vuota', () => {
   assert.deepEqual(out.entries, []);
 });
 
+// ---------- uscite dentro il backup ----------
+
+const x = (id, over = {}) =>
+  ({ id, kind: 'var', label: 'spesa', amountCents: 4000, date: '2026-07-03', createdAt: 1, deletedAt: null, ...over });
+
+test('backup senza il campo extras (formato vecchio) resta valido', () => {
+  const out = parseBackup(wrap([r('a')]));
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.extras, []);
+});
+
+test('backup con uscite valide: fisse senza data, variabili con data', () => {
+  const extras = [x('v1'), x('f1', { kind: 'fixed', date: null, label: 'Spese fisse del mese', amountCents: 135036 })];
+  const raw = JSON.stringify({ exportedAt: '2026-07-27T20:00:00.000Z', entries: [r('a')], extras });
+  const out = parseBackup(raw);
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.extras, extras);
+});
+
+test('una uscita malformata -> rifiuto di tutto il file, come per gli incassi', () => {
+  const cases = [
+    x('v1', { kind: 'altro' }),
+    x('v1', { amountCents: -5 }),
+    x('v1', { amountCents: 12.5 }),
+    x('v1', { date: null }),            // variabile senza data
+    x('v1', { date: '2026-99-01' }),
+    x('v1', { label: 42 }),
+    x('v1', { createdAt: 'ieri' }),
+    x('', {}),
+  ];
+  for (const bad of cases) {
+    const raw = JSON.stringify({ exportedAt: '2026-07-27', entries: [r('a')], extras: [x('ok'), bad] });
+    const out = parseBackup(raw);
+    assert.equal(out.ok, false, JSON.stringify(bad));
+    assert.equal(out.error, 'righe');
+    assert.equal(out.badRows, 1);
+  }
+});
+
+test('extras non array -> errore formato', () => {
+  const raw = JSON.stringify({ exportedAt: '2026-07-27', entries: [], extras: 'niente' });
+  assert.equal(parseBackup(raw).error, 'formato');
+});
+
 // ---------- mergeBackup ----------
 
 test('import su app vuota -> tutte le righe aggiunte', () => {

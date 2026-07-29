@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatCents, todayISO, monthOf } from '../js/money.js';
-import { dayTotals, monthStats, yearDeclared, prevMonthDelta } from '../js/totals.js';
+import { dayTotals, monthStats, yearDeclared, prevMonthDelta, bigVisitShare } from '../js/totals.js';
 
 const e = (date, amountCents, channel, deletedAt = null, createdAt = 1) =>
   ({ id: `${date}-${amountCents}-${channel}-${Math.random()}`, date, amountCents, channel, createdAt, deletedAt });
@@ -58,6 +58,17 @@ test('monthStats: totali, visite, giorni lavorati, medie', () => {
   assert.equal(s.perDay[1].total, 0);
 });
 
+test('perDay: ogni giorno del mese con numero, totale e visite', () => {
+  const s = monthStats(FIX, '2026-07');
+  assert.equal(s.perDay.length, 31);
+  assert.deepEqual(s.perDay[0], { date: '2026-07-01', day: 1, total: 14000, visits: 3 });
+  assert.deepEqual(s.perDay[1], { date: '2026-07-02', day: 2, total: 0, visits: 0 });
+  assert.deepEqual(s.perDay[14], { date: '2026-07-15', day: 15, total: 12200, visits: 3 });
+  assert.equal(s.perDay[30].day, 31);
+  // febbraio 2026 ha 28 giorni: nessun giorno inventato
+  assert.equal(monthStats(FIX, '2026-02').perDay.length, 28);
+});
+
 test('monthStats su mese vuoto: zeri, niente NaN', () => {
   const s = monthStats(FIX, '2026-01');
   assert.equal(s.total, 0);
@@ -79,6 +90,22 @@ test('prevMonthDelta', () => {
   const empty = prevMonthDelta(FIX, '2026-06'); // maggio vuoto
   assert.equal(empty.prevTotal, 0);
   assert.equal(empty.deltaPct, null);
+});
+
+test('bigVisitShare: quanto pesano le visite da 50 € in su', () => {
+  // luglio: 80,00 B · 35,00 S · 25,00 C · 15,00 R · 30,00 C · 77,00 B
+  const s = bigVisitShare(FIX, '2026-07', 5000);
+  assert.equal(s.visits, 6);
+  assert.equal(s.bigVisits, 2); // 80,00 e 77,00
+  assert.equal(s.bigTotal, 15700);
+  assert.equal(s.total, 26200);
+  assert.equal(s.pctVisits, 33);
+  assert.equal(s.pctTotal, 60);
+});
+
+test('bigVisitShare su mese vuoto: zeri, niente divisioni per zero', () => {
+  const s = bigVisitShare(FIX, '2026-01', 5000);
+  assert.deepEqual([s.visits, s.bigVisits, s.pctVisits, s.pctTotal], [0, 0, 0, 0]);
 });
 
 test('cambio anno nel delta: gennaio guarda dicembre', () => {

@@ -2,7 +2,7 @@
 // l'app funziona integralmente offline. Per pubblicare una nuova
 // versione basta incrementare VERSION.
 
-const VERSION = 'ri-v7';
+const VERSION = 'ri-v9';
 const ASSETS = [
   '.',
   'index.html',
@@ -18,6 +18,9 @@ const ASSETS = [
   'js/ui.js',
   'js/month.js',
   'js/chart.js',
+  'js/reset.js',
+  'js/channels.js',
+  'js/expenses.js',
   'icons/icon-180.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
