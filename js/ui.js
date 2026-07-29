@@ -1,10 +1,10 @@
 // Rendering della schermata registro. Funzioni pure DOM: ricevono lo
 // stato, ridisegnano. Nessuno stato proprio oltre il timer del toast.
 
-import { formatCents, todayISO, daysInMonth, monthOf } from './money.js';
+import { formatCents, todayISO } from './money.js';
 import { dayTotals, yearDeclared } from './totals.js';
 import { CHANNELS, CH_SHORT, THRESHOLD_CENTS } from './channels.js';
-import { dayVariableItems, dailyFixedShare, fixedTotal, dayBalance } from './expenses.js';
+import { dayVariableItems, dayFixedShare, fixedTotal, dayBalance } from './expenses.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -85,14 +85,17 @@ export function renderDay(entries, extras, dateISO, onRowTap, onExpenseTap) {
 export function renderDayNet(entries, extras, dateISO) {
   const income = dayTotals(entries, dateISO).total;
   const spese = dayVariableItems(extras, dateISO).reduce((s, x) => s + x.amountCents, 0);
-  const quota = dailyFixedShare(fixedTotal(extras), daysInMonth(monthOf(dateISO)));
+  // Quota delle fisse divisa sulle giornate di lavoro (sabato mezzo,
+  // domenica chiusa), non sui giorni di calendario: di domenica è zero.
+  const quota = dayFixedShare(fixedTotal(extras), dateISO);
   const { netCents } = dayBalance({ incomeCents: income, variableCents: spese, fixedShareCents: quota });
 
   const el = $('day-net');
   el.classList.toggle('positive', netCents > 0);
-  const dettaglio = spese > 0
-    ? `incassi ${formatCents(income)} − spese ${formatCents(spese)} − quota fissa ${formatCents(quota)}`
-    : `incassi ${formatCents(income)} − quota fissa ${formatCents(quota)}`;
+  const pezzi = [`incassi ${formatCents(income)}`];
+  if (spese > 0) pezzi.push(`− spese ${formatCents(spese)}`);
+  pezzi.push(quota > 0 ? `− quota fissa ${formatCents(quota)}` : '· domenica, nessuna quota');
+  const dettaglio = pezzi.join(' ');
   $('day-net-value').textContent = `${netCents >= 0 ? '+' : '−'}${formatCents(Math.abs(netCents))}`;
   $('day-net-detail').textContent = dettaglio;
 }
@@ -140,8 +143,12 @@ export function showBanner(text) {
   b.hidden = false;
 }
 
-export function showExportReminder(visible) {
-  $('export-reminder').hidden = !visible;
+// Il promemoria ha due testi diversi (memoria a rischio, export
+// vecchio): chi chiama decide quale, qui si mostra e basta.
+export function showExportReminder(visible, text = null) {
+  const el = $('export-reminder');
+  if (text) el.textContent = text;
+  el.hidden = !visible;
 }
 
 // Cestino: incassi e spese cancellate insieme. Prima le spese finivano

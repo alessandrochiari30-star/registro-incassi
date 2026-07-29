@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseExpenseInput, DEFAULT_EXPENSE_LABEL, DEFAULT_FIXED_CENTS,
-  fixedEntry, fixedTotal, variableItems, variableTotal, dayVariableItems,
-  dailyFixedShare, dayBalance, monthBalance, breakEvenDay,
+  parseExpenseInput, DEFAULT_EXPENSE_LABEL, DEFAULT_FIXED_CENTS, DEFAULT_HOME_CENTS,
+  FIXED_ID, FIXED_HOME_ID,
+  fixedEntry, fixedAmount, fixedTotal, variableItems, variableTotal, dayVariableItems,
+  dailyFixedShare, workDaysInMonth, isOpenDay, dayFixedShare,
+  dayBalance, monthBalance, breakEvenDay,
 } from '../js/expenses.js';
 
 const fixed = (amountCents, deletedAt = null) =>
-  ({ id: 'fixed-monthly', kind: 'fixed', label: 'Spese fisse del mese', amountCents, date: null, createdAt: 1, deletedAt });
+  ({ id: FIXED_ID, kind: 'fixed', label: 'Spese attività', amountCents, date: null, createdAt: 1, deletedAt });
+const casa = (amountCents, deletedAt = null) =>
+  ({ id: FIXED_HOME_ID, kind: 'fixed', label: 'Spese casa', amountCents, date: null, createdAt: 1, deletedAt });
 const spesa = (date, amountCents, label = 'spesa', deletedAt = null) =>
   ({ id: `${date}-${amountCents}-${label}`, kind: 'var', label, amountCents, date, createdAt: 1, deletedAt });
 
@@ -30,12 +34,23 @@ test('parseExpenseInput: rifiuta ciò che non ha un importo', () => {
   assert.equal(parseExpenseInput('0 niente'), null); // zero non è una spesa
 });
 
-test('voce fissa: una sola, e senza si parte dal valore del dossier', () => {
-  assert.equal(fixedTotal([]), DEFAULT_FIXED_CENTS);
-  assert.equal(fixedTotal([fixed(200000)]), 200000);
+test('voci fisse: due, e senza si parte dai valori di partenza', () => {
+  assert.equal(fixedTotal([]), DEFAULT_FIXED_CENTS + DEFAULT_HOME_CENTS);
+  assert.equal(fixedTotal([fixed(200000)]), 200000 + DEFAULT_HOME_CENTS);
+  assert.equal(fixedTotal([fixed(200000), casa(50000)]), 250000);
   assert.equal(fixedEntry([fixed(200000, 999)]), null); // cancellata
-  assert.equal(fixedTotal([fixed(200000, 999)]), DEFAULT_FIXED_CENTS);
-  assert.equal(fixedTotal([fixed(0)]), 0); // azzerarle è una scelta valida
+  assert.equal(fixedTotal([fixed(200000, 999)]), DEFAULT_FIXED_CENTS + DEFAULT_HOME_CENTS);
+  assert.equal(fixedTotal([fixed(0), casa(0)]), 0); // azzerarle è una scelta valida
+});
+
+test('le due voci fisse non si confondono fra loro', () => {
+  const extras = [fixed(111100), casa(222200)];
+  assert.equal(fixedAmount(extras, FIXED_ID), 111100);
+  assert.equal(fixedAmount(extras, FIXED_HOME_ID), 222200);
+  assert.equal(fixedEntry(extras, FIXED_HOME_ID).amountCents, 222200);
+  // casa salvata a zero resta zero: non ricade sul valore di partenza
+  assert.equal(fixedAmount([casa(0)], FIXED_HOME_ID), 0);
+  assert.equal(fixedAmount([casa(0)], FIXED_ID), DEFAULT_FIXED_CENTS);
 });
 
 test('spese variabili: filtrate per mese e per giorno, cancellate escluse', () => {
@@ -54,10 +69,32 @@ test('spese variabili: filtrate per mese e per giorno, cancellate escluse', () =
 });
 
 test('quota giornaliera delle fisse', () => {
-  assert.equal(dailyFixedShare(135036, 31), 4356); // 43,56 €
-  assert.equal(dailyFixedShare(135036, 30), 4501);
-  assert.equal(dailyFixedShare(0, 31), 0);
+  assert.equal(dailyFixedShare(225036, 25), 9001); // 90,01 €
+  assert.equal(dailyFixedShare(135036, 24), 5627);
+  assert.equal(dailyFixedShare(0, 25), 0);
   assert.equal(dailyFixedShare(135036, 0), 0); // niente divisioni per zero
+});
+
+test('giornate di lavoro: sabato mezzo, domenica chiusa', () => {
+  assert.equal(workDaysInMonth('2026-07'), 25); // 31 gg, 4 sab, 4 dom
+  assert.equal(workDaysInMonth('2026-08'), 23.5); // 5 sab, 5 dom
+  assert.equal(workDaysInMonth('2026-02'), 22);
+  assert.equal(workDaysInMonth(''), 0);
+  assert.equal(workDaysInMonth('2026-13'), 0); // mese impossibile, non 0 giorni veri
+});
+
+test('giorni di apertura: tutti tranne la domenica', () => {
+  assert.equal(isOpenDay('2026-07-25'), true); // sabato
+  assert.equal(isOpenDay('2026-07-26'), false); // domenica
+  assert.equal(isOpenDay('2026-07-27'), true); // lunedì
+  assert.equal(isOpenDay(''), false);
+});
+
+test('quota del giorno: uguale nei giorni aperti, zero di domenica', () => {
+  assert.equal(dayFixedShare(225036, '2026-07-27'), 9001); // lunedì
+  assert.equal(dayFixedShare(225036, '2026-07-25'), 9001); // sabato: stessa quota
+  assert.equal(dayFixedShare(225036, '2026-07-26'), 0); // domenica
+  assert.equal(dayFixedShare(0, '2026-07-27'), 0);
 });
 
 test('conto della giornata', () => {

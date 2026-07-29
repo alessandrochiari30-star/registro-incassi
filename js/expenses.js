@@ -8,14 +8,25 @@
 
 import { parseAmount } from './parser.js';
 
-// Una sola voce fissa, modificabile: serve a dare un riferimento al
-// pareggio, non a fare il budget. Parte dai costi di attività misurati
-// nel dossier 2025 (affitto, utenze, contributi, commercialista); un
-// numero di un anno fa non deve sopravvivere per inerzia, quindi si
-// cambia con un tocco.
+// Due voci fisse, modificabili: servono a dare un riferimento al
+// pareggio, non a fare il budget. La prima parte dai costi di attività
+// misurati nel dossier 2025 (affitto, utenze, contributi,
+// commercialista), la seconda è quello che la casa chiede ogni mese —
+// perché la giornata di lavoro deve coprire tutte e due. Un numero di
+// un anno fa non deve sopravvivere per inerzia, quindi si cambiano con
+// un tocco.
 export const FIXED_ID = 'fixed-monthly';
 export const DEFAULT_FIXED_CENTS = 135_036;
-export const DEFAULT_FIXED_LABEL = 'Spese fisse del mese';
+export const DEFAULT_FIXED_LABEL = 'Spese attività';
+
+export const FIXED_HOME_ID = 'fixed-home';
+export const DEFAULT_HOME_CENTS = 90_000;
+export const DEFAULT_HOME_LABEL = 'Spese casa';
+
+export const FIXED_ITEMS = [
+  { id: FIXED_ID, label: DEFAULT_FIXED_LABEL, defaultCents: DEFAULT_FIXED_CENTS },
+  { id: FIXED_HOME_ID, label: DEFAULT_HOME_LABEL, defaultCents: DEFAULT_HOME_CENTS },
+];
 
 export const DEFAULT_EXPENSE_LABEL = 'spesa';
 export const MAX_LABEL = 40;
@@ -43,10 +54,17 @@ export function parseExpenseInput(text) {
 
 const alive = (extras) => (extras ?? []).filter((x) => x.deletedAt == null);
 
-// La voce fissa è una sola. Se non c'è ancora (prima apertura, o
-// cancellata) vale il valore di partenza.
-export function fixedEntry(extras) {
-  return alive(extras).find((x) => x.kind === 'fixed') ?? null;
+// La riga salvata di una voce fissa, cercata per id. Se non c'è ancora
+// (prima apertura, o cancellata) ritorna null e vale il valore di
+// partenza — vedi fixedAmount.
+export function fixedEntry(extras, id = FIXED_ID) {
+  return alive(extras).find((x) => x.kind === 'fixed' && x.id === id) ?? null;
+}
+
+export function fixedAmount(extras, id) {
+  const saved = fixedEntry(extras, id);
+  if (saved) return saved.amountCents;
+  return FIXED_ITEMS.find((i) => i.id === id)?.defaultCents ?? 0;
 }
 
 export function variableItems(extras, ym) {
@@ -60,20 +78,53 @@ export function dayVariableItems(extras, iso) {
 const sum = (items) => items.reduce((s, x) => s + x.amountCents, 0);
 
 export function fixedTotal(extras) {
-  return fixedEntry(extras)?.amountCents ?? DEFAULT_FIXED_CENTS;
+  return FIXED_ITEMS.reduce((s, i) => s + fixedAmount(extras, i.id), 0);
 }
 
 export function variableTotal(extras, ym) {
   return sum(variableItems(extras, ym));
 }
 
-// Quota giornaliera delle spese fisse: servono per vedere ogni sera se
-// la giornata ha pagato la sua parte di affitto, non solo se ha
-// incassato. Divisione sui giorni di calendario, non sui giorni
-// lavorati: l'affitto corre anche di domenica.
-export function dailyFixedShare(fixedCents, daysInMonth) {
-  if (!(daysInMonth > 0)) return 0;
-  return Math.round(fixedCents / daysInMonth);
+// Giornate di lavoro del mese. Paola apre dal lunedì al sabato, ma il
+// sabato è solo la mattina: vale mezza giornata, così la settimana fa
+// 5,5. La domenica è chiusa e non conta.
+// Il divisore è questo, NON i giorni di calendario: la domanda che si
+// fa la sera è "quanto deve rendere una giornata di lavoro", e su
+// quella riga la domenica non c'è.
+export function workDaysInMonth(ym) {
+  const [y, m] = String(ym ?? '').split('-').map(Number);
+  if (!(y > 0) || !(m >= 1 && m <= 12)) return 0;
+  const last = new Date(y, m, 0).getDate();
+  let n = 0;
+  for (let d = 1; d <= last; d++) {
+    const wd = new Date(y, m - 1, d).getDay(); // 0 domenica, 6 sabato
+    if (wd === 0) continue;
+    n += wd === 6 ? 0.5 : 1;
+  }
+  return n;
+}
+
+export function isOpenDay(iso) {
+  const [y, m, d] = String(iso ?? '').split('-').map(Number);
+  if (!(y > 0)) return false;
+  return new Date(y, m - 1, d).getDay() !== 0;
+}
+
+// Quota di fisse che una giornata deve coprire: serve a vedere ogni
+// sera se la giornata ha pagato la sua parte di affitto, non solo se ha
+// incassato.
+export function dailyFixedShare(fixedCents, workDays) {
+  if (!(workDays > 0)) return 0;
+  return Math.round(fixedCents / workDays);
+}
+
+// La quota del singolo giorno: uguale in tutti i giorni di apertura,
+// zero di domenica. Sommando i giorni aperti si supera di poco il
+// totale delle fisse (il sabato paga come un feriale pur contando
+// mezzo): l'obiettivo giornaliero resta un filo prudente, mai basso.
+export function dayFixedShare(fixedCents, iso) {
+  if (!isOpenDay(iso)) return 0;
+  return dailyFixedShare(fixedCents, workDaysInMonth(String(iso).slice(0, 7)));
 }
 
 // Conto della singola giornata.

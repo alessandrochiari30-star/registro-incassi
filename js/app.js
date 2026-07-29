@@ -3,13 +3,15 @@
 
 import { parseAmount } from './parser.js';
 import { formatCents, todayISO } from './money.js';
-import { initDB, saveEntry, saveExtra, purgeAll, requestPersistence } from './db.js';
+import {
+  initDB, saveEntry, saveExtra, purgeAll, requestPersistence,
+  isMirrorError, isSaved, writeMessage,
+} from './db.js';
 import * as ui from './ui.js';
 import { renderMonth } from './month.js';
-import { CH_NAMES, MSG_SAVE_FAILED, MSG_MIRROR_FAILED } from './channels.js';
+import { CH_NAMES, MSG_MIRROR_FAILED } from './channels.js';
 import { parseExpenseInput, MAX_LABEL, DEFAULT_EXPENSE_LABEL } from './expenses.js';
-
-const EXPORT_REMINDER_MS = 7 * 24 * 60 * 60 * 1000;
+import { exportReminder } from './reminder.js';
 
 const state = {
   entries: [],
@@ -25,30 +27,33 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- persistenza con segnalazione errori ----------
 
-// Un mirror non scritto non è un salvataggio fallito: il dato è
-// nell'archivio primario. Dirlo con le stesse parole spaventava per
-// niente e faceva fare export inutili.
-function reportWriteError(err) {
-  ui.showBanner(err?.name === 'MirrorError' ? MSG_MIRROR_FAILED : MSG_SAVE_FAILED);
-}
-
-async function persist(entry) {
+// Ogni scrittura passa di qui, senza eccezioni. Ritorna true se il
+// dato è finito sul disco, e allora il gesto va portato a termine fino
+// in fondo (schermo aggiornato, foglio chiuso, toast).
+//
+// Se salta uno solo dei due archivi il dato è comunque su questo
+// telefono: si avvisa con parole diverse ma il gesto va avanti. Prima
+// ogni percorso decideva da sé: due uscivano a metà strada dopo aver
+// salvato davvero — la riga restava invisibile e veniva riscritta,
+// oppure una cancellazione riuscita continuava a mostrarsi. E due non
+// prendevano l'errore del tutto.
+//
+// rollback rimette lo stato in memoria com'era: si chiama solo quando
+// non è arrivato niente da nessuna parte.
+async function write(save, rollback = null) {
   try {
-    await saveEntry(entry, state.entries);
+    await save();
+    return true;
   } catch (err) {
-    reportWriteError(err);
-    throw err;
+    ui.showBanner(writeMessage(err));
+    if (isSaved(err)) return true; // il dato c'è: il gesto continua
+    rollback?.();
+    return false;
   }
 }
 
-async function persistExtra(extra) {
-  try {
-    await saveExtra(extra, state.extras);
-  } catch (err) {
-    reportWriteError(err);
-    throw err;
-  }
-}
+const persist = (entry, rollback) => write(() => saveEntry(entry, state.entries), rollback);
+const persistExtra = (extra, rollback) => write(() => saveExtra(extra, state.extras), rollback);
 
 // ---------- registro ----------
 
@@ -73,16 +78,13 @@ async function insert(channel) {
     deletedAt: null,
   };
   state.entries.push(entry);
-  try {
-    await persist(entry);
-  } catch (err) {
-    // Se non è finita su disco, la riga non deve restare sullo schermo:
-    // sparirebbe da sola alla riapertura. Con MirrorError invece il
-    // dato è salvato davvero, quindi resta dov'è.
-    if (err?.name !== 'MirrorError') {
-      state.entries = state.entries.filter((e) => e.id !== entry.id);
-      refreshRegistro();
-    }
+  // Se non è finita su disco, la riga non deve restare sullo schermo:
+  // sparirebbe da sola alla riapertura.
+  const ok = await persist(entry, () => {
+    state.entries = state.entries.filter((e) => e.id !== entry.id);
+  });
+  if (!ok) {
+    refreshRegistro();
     return;
   }
   state.buffer = '';
@@ -93,8 +95,9 @@ async function insert(channel) {
 async function undo(id) {
   const e = state.entries.find((x) => x.id === id);
   if (!e) return;
+  const prima = e.deletedAt;
   e.deletedAt = Date.now();
-  await persist(e);
+  await persist(e, () => { e.deletedAt = prima; });
   refreshRegistro();
 }
 
@@ -140,10 +143,9 @@ async function saveEdit() {
   e.amountCents = cents;
   e.channel = $('edit-channel').value;
   e.date = date;
-  try {
-    await persist(e);
-  } catch (err) {
-    if (err?.name !== 'MirrorError') Object.assign(e, prima); // su disco è rimasta la versione vecchia
+  // su disco è rimasta la versione vecchia: si torna a quella
+  const ok = await persist(e, () => Object.assign(e, prima));
+  if (!ok) {
     refreshRegistro();
     return;
   }
@@ -154,8 +156,13 @@ async function saveEdit() {
 async function deleteEdit() {
   const e = state.entries.find((x) => x.id === state.editingId);
   if (!e) return;
+  const prima = e.deletedAt;
   e.deletedAt = Date.now();
-  await persist(e);
+  const ok = await persist(e, () => { e.deletedAt = prima; });
+  if (!ok) {
+    refreshRegistro();
+    return;
+  }
   $('edit-sheet').close();
   refreshRegistro();
 }
@@ -193,6 +200,7 @@ async function saveExpense() {
   const label = rawLabel.slice(0, MAX_LABEL) || insieme?.label || DEFAULT_EXPENSE_LABEL;
   let x = state.extras.find((e) => e.id === state.editingExpenseId);
   const prima = x ? { amountCents: x.amountCents, label: x.label, date: x.date } : null;
+  const bufferPrima = state.buffer;
   if (x) {
     x.amountCents = cents;
     x.label = label;
@@ -210,15 +218,15 @@ async function saveExpense() {
     state.extras.push(x);
     state.buffer = '';
   }
-  try {
-    await persistExtra(x);
-  } catch (err) {
-    if (err?.name !== 'MirrorError') {
-      // niente su disco: si torna esattamente com'era prima
-      if (prima) Object.assign(x, prima);
-      else state.extras = state.extras.filter((e) => e.id !== x.id);
-      refreshRegistro();
-    }
+  // niente su disco: si torna esattamente com'era prima, importo
+  // digitato compreso
+  const ok = await persistExtra(x, () => {
+    if (prima) Object.assign(x, prima);
+    else state.extras = state.extras.filter((e) => e.id !== x.id);
+    state.buffer = bufferPrima;
+  });
+  if (!ok) {
+    refreshRegistro();
     return;
   }
   $('expense-sheet').close();
@@ -228,11 +236,10 @@ async function saveExpense() {
 async function deleteExpense() {
   const x = state.extras.find((e) => e.id === state.editingExpenseId);
   if (!x) return;
+  const prima = x.deletedAt;
   x.deletedAt = Date.now();
-  try {
-    await persistExtra(x);
-  } catch (err) {
-    if (err?.name !== 'MirrorError') x.deletedAt = null;
+  const ok = await persistExtra(x, () => { x.deletedAt = prima; });
+  if (!ok) {
     refreshRegistro();
     return;
   }
@@ -247,11 +254,7 @@ async function restore(id) {
   if (!e) return;
   const prima = e.deletedAt;
   e.deletedAt = null;
-  try {
-    await persist(e);
-  } catch (err) {
-    if (err?.name !== 'MirrorError') e.deletedAt = prima;
-  }
+  await persist(e, () => { e.deletedAt = prima; });
   showTrash();
   refreshRegistro();
 }
@@ -261,11 +264,7 @@ async function restoreExpense(id) {
   if (!x) return;
   const prima = x.deletedAt;
   x.deletedAt = null;
-  try {
-    await persistExtra(x);
-  } catch (err) {
-    if (err?.name !== 'MirrorError') x.deletedAt = prima;
-  }
+  await persistExtra(x, () => { x.deletedAt = prima; });
   showTrash();
   refreshRegistro();
 }
@@ -307,7 +306,7 @@ async function emptyTrash() {
       remainingExtras,
     });
   } catch (err) {
-    if (err?.name === 'MirrorError') {
+    if (isMirrorError(err)) {
       // cancellazione avvenuta davvero: lo stato va aggiornato lo stesso
       state.entries = remainingEntries;
       state.extras = remainingExtras;
@@ -342,16 +341,32 @@ function showView(name) {
   if (name === 'mese') renderMonth($('view-mese'), state, refreshRegistro);
 }
 
-function checkExportReminder() {
-  const last = Number(localStorage.getItem('ri-lastExport') ?? localStorage.getItem('ri-firstRun') ?? Date.now());
-  const hasData = state.entries.some((e) => e.deletedAt == null);
-  ui.showExportReminder(hasData && Date.now() - last > EXPORT_REMINDER_MS);
+// `persisted` arriva dall'avvio: false vuol dire che il browser può
+// buttare via i dati quando gli pare (scheda Safari su iOS, navigazione
+// privata). È un motivo diverso dall'export vecchio e non deve essere
+// spento da quello.
+function checkExportReminder(persisted = true) {
+  let last = null;
+  try {
+    last = localStorage.getItem('ri-lastExport') ?? localStorage.getItem('ri-firstRun');
+  } catch { /* localStorage inaccessibile: si ragiona senza */ }
+  const promemoria = exportReminder({
+    hasData: state.entries.some((e) => e.deletedAt == null),
+    persisted,
+    lastExportAt: last === null ? null : Number(last),
+  });
+  ui.showExportReminder(promemoria.visible, promemoria.text);
 }
 
 // ---------- avvio ----------
 
 async function main() {
-  if (!localStorage.getItem('ri-firstRun')) localStorage.setItem('ri-firstRun', String(Date.now()));
+  // Se il browser vieta del tutto localStorage (cookie bloccati), il
+  // solo leggerlo lancia: l'app deve partire lo stesso, non morire con
+  // uno schermo bianco prima di disegnare qualcosa.
+  try {
+    if (!localStorage.getItem('ri-firstRun')) localStorage.setItem('ri-firstRun', String(Date.now()));
+  } catch { /* si va avanti senza: il promemoria export ragionerà senza data */ }
 
   const { entries, extras, recovered, idbDown, mirrorDown } = await initDB();
   state.entries = entries;
@@ -368,10 +383,7 @@ async function main() {
   }
 
   const persisted = await requestPersistence();
-  if (!persisted && entries.length > 0) {
-    ui.showExportReminder(true);
-  }
-  checkExportReminder();
+  checkExportReminder(persisted);
   refreshRegistro();
 
   // tastierino

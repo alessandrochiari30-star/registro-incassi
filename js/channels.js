@@ -39,3 +39,9 @@ export const MSG_SAVE_FAILED =
 // molto meno grave, e con parole diverse.
 export const MSG_MIRROR_FAILED =
   'Copia di sicurezza non aggiornata: i dati sono salvati, ma conviene fare un export.';
+
+// Il contrario: l'archivio principale non ha accettato la scrittura ma
+// la copia di sicurezza sì. Il dato c'è, l'app regge, però sta in piedi
+// su una gamba sola.
+export const MSG_PRIMARY_FAILED =
+  'Archivio principale non disponibile: i dati sono al sicuro nella copia, ma fai un export appena puoi.';

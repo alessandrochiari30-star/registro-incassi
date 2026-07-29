@@ -6,17 +6,17 @@ import { monthStats, yearDeclared, prevMonthDelta, bigVisitShare } from './total
 import { dailyBarsSVG, channelBarSVG, thresholdBarSVG } from './chart.js';
 import { toCSV, toJSON } from './exporter.js';
 import { parseBackup, mergeBackup } from './backup.js';
-import { initDB, saveAll, saveAllExtras, saveExtra, wipeAll } from './db.js';
+import { initDB, saveAll, saveAllExtras, saveExtra, wipeAll, isSaved, writeMessage } from './db.js';
 import { resetGate, gateHint } from './reset.js';
 import { showToast, showBanner } from './ui.js';
 import {
   CHANNELS, CH_SHORT, THRESHOLD_CENTS, INPS_MIN_CENTS, BIG_VISIT_CENTS,
-  MSG_SAVE_FAILED, MSG_MIRROR_FAILED,
 } from './channels.js';
 import { parseAmount } from './parser.js';
 import {
-  FIXED_ID, DEFAULT_FIXED_LABEL, fixedEntry, fixedTotal,
+  FIXED_ITEMS, fixedEntry, fixedAmount, fixedTotal,
   variableItems, variableTotal, monthBalance, breakEvenDay,
+  workDaysInMonth, dailyFixedShare,
 } from './expenses.js';
 
 // Backup fatto durante questa apertura dell'app: sblocca il secondo
@@ -71,7 +71,11 @@ async function shareFile(filename, content, mime) {
 }
 
 function markExported() {
-  localStorage.setItem('ri-lastExport', String(Date.now()));
+  // Se localStorage è vietato l'export è comunque riuscito: non deve
+  // trasformarsi in un errore dopo che il file è già uscito.
+  try {
+    localStorage.setItem('ri-lastExport', String(Date.now()));
+  } catch { /* niente da fare: il promemoria tornerà */ }
   document.getElementById('export-reminder').hidden = true;
 }
 
@@ -149,7 +153,7 @@ async function importBackupFile(file, container, state, onDataChanged) {
     if (merged.added > 0) await saveAllExtras(merged.entries);
     state.extras = merged.entries;
   } catch (err) {
-    showBanner(err?.name === 'MirrorError' ? MSG_MIRROR_FAILED : MSG_SAVE_FAILED);
+    showBanner(writeMessage(err));
     onDataChanged?.();
     renderMonth(container, state, onDataChanged);
     return;
@@ -178,11 +182,16 @@ function dayLabel(iso) {
   return new Date(y, m - 1, d).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
+// "1 visita" / "3 visite": il plurale sbagliato in una schermata di
+// numeri fa sembrare sbagliati anche i numeri.
+function visitLabel(n) {
+  return n === 1 ? '1 visita' : `${n} visite`;
+}
+
 function dayReadout(d) {
   if (!d) return 'Tocca una barra per vedere il giorno e il suo incasso.';
   if (d.total === 0) return `${dayLabel(d.date)} · nessun incasso`;
-  const visite = d.visits === 1 ? '1 visita' : `${d.visits} visite`;
-  return `${dayLabel(d.date)} · ${formatCents(d.total)} · ${visite}`;
+  return `${dayLabel(d.date)} · ${formatCents(d.total)} · ${visitLabel(d.visits)}`;
 }
 
 // Il tocco su una colonna del grafico: evidenzia quella colonna e
@@ -206,12 +215,17 @@ function wireDailyChart(container, perDay) {
   });
 }
 
-// La voce delle spese fisse: una sola, si cambia scrivendoci sopra.
-// Zero significa "non contarle", ed è una risposta legittima: qui non
-// si tiene un bilancio, si dà un riferimento al pareggio.
+// Le voci delle spese fisse (attività e casa): si cambiano scrivendoci
+// sopra, una per volta. Zero significa "non contarle", ed è una
+// risposta legittima: qui non si tiene un bilancio, si dà un
+// riferimento al pareggio.
 function wireFixedCosts(container, state, onDataChanged) {
-  const input = container.querySelector('#fix-amount');
-  const btn = container.querySelector('#fix-save');
+  for (const item of FIXED_ITEMS) wireOneFixedCost(container, state, onDataChanged, item);
+}
+
+function wireOneFixedCost(container, state, onDataChanged, item) {
+  const input = container.querySelector(`#fix-amount-${item.id}`);
+  const btn = container.querySelector(`#fix-save-${item.id}`);
   if (!input || !btn) return;
 
   btn.addEventListener('click', async () => {
@@ -221,15 +235,15 @@ function wireFixedCosts(container, state, onDataChanged) {
       input.style.borderColor = 'var(--danger)';
       return;
     }
-    let x = fixedEntry(state.extras);
+    let x = fixedEntry(state.extras, item.id);
     const prima = x ? x.amountCents : null;
     if (x) {
       x.amountCents = cents;
     } else {
       x = {
-        id: FIXED_ID,
+        id: item.id,
         kind: 'fixed',
-        label: DEFAULT_FIXED_LABEL,
+        label: item.label,
         amountCents: cents,
         date: null,
         createdAt: Date.now(),
@@ -240,20 +254,19 @@ function wireFixedCosts(container, state, onDataChanged) {
     try {
       await saveExtra(x, state.extras);
     } catch (err) {
-      if (err?.name !== 'MirrorError') {
-        // non salvata: si torna al valore di prima invece di mostrarne
-        // uno che sul disco non esiste
-        if (prima === null) state.extras = state.extras.filter((e) => e.id !== FIXED_ID);
+      showBanner(writeMessage(err));
+      if (!isSaved(err)) {
+        // non salvata da nessuna parte: si torna al valore di prima
+        // invece di mostrarne uno che sul disco non esiste
+        if (prima === null) state.extras = state.extras.filter((e) => e.id !== item.id);
         else x.amountCents = prima;
-        showBanner(MSG_SAVE_FAILED);
         renderMonth(container, state, onDataChanged);
         return;
       }
-      showBanner(MSG_MIRROR_FAILED);
     }
     onDataChanged?.();
     renderMonth(container, state, onDataChanged);
-    showToast('Spese fisse aggiornate.', null, 3000);
+    showToast(`${item.label}: aggiornate.`, null, 3000);
   });
 }
 
@@ -340,6 +353,12 @@ function wireDangerZone(container, state, onDataChanged) {
     state.entries = [];
     state.extras = [];
     backupOkAt = null;
+    // Il promemoria export non deve ragionare su date di prima
+    // dell'azzeramento: da qui è come un'app appena installata.
+    try {
+      localStorage.removeItem('ri-lastExport');
+      localStorage.setItem('ri-firstRun', String(Date.now()));
+    } catch { /* niente da fare */ }
     onDataChanged?.();
     renderMonth(container, state, onDataChanged);
     showToast(`Azzerato: cancellati ${conteggio}.`, null, 8000);
@@ -363,19 +382,33 @@ function netCardHTML(state, ym, incomeCents, perDay) {
     .map((x) => `<li><span>${Number(x.date.slice(8))} · ${esc(x.label)}</span><b>${formatCents(x.amountCents)}</b></li>`)
     .join('');
 
+  // Le fisse divise sulle giornate di lavoro: è il numero che il
+  // registro toglie ogni sera, quindi va detto anche da dove esce.
+  const giornate = workDaysInMonth(ym);
+  const quota = dailyFixedShare(fisse, giornate);
+  const giornateTesto = String(giornate).replace('.', ',');
+
+  const fixRows = FIXED_ITEMS.map((item) => `
+      <div class="fix-row">
+        <label for="fix-amount-${item.id}">${item.label}</label>
+        <input id="fix-amount-${item.id}" type="text" inputmode="decimal" value="${(fixedAmount(state.extras, item.id) / 100).toFixed(2).replace('.', ',')}">
+        <button id="fix-save-${item.id}" type="button">Salva</button>
+      </div>`).join('');
+
+  const fixTotali = FIXED_ITEMS
+    .map((item) => `<div><span>${item.label}</span><b>−${formatCents(fixedAmount(state.extras, item.id))}</b></div>`)
+    .join('');
+
   return `
     <div class="card">
       <h3>Quanto resta</h3>
       <div class="net-big ${bilancio.netCents >= 0 ? 'pos' : ''}">${bilancio.netCents < 0 ? '−' : ''}${formatCents(Math.abs(bilancio.netCents))}</div>
       <div class="net-note">${pareggioTesto}</div>
-      <div class="fix-row">
-        <label for="fix-amount">Spese fisse del mese</label>
-        <input id="fix-amount" type="text" inputmode="decimal" value="${(fisse / 100).toFixed(2).replace('.', ',')}">
-        <button id="fix-save" type="button">Salva</button>
-      </div>
+      ${fixRows}
+      <div class="net-note">Una giornata deve coprire ${formatCents(quota)} di spese fisse: ${formatCents(fisse)} su ${giornateTesto} giornate di lavoro (sabato mezza, domenica chiusa).</div>
       <div class="net-rows">
         <div><span>Incassi</span><b>${formatCents(incomeCents)}</b></div>
-        <div><span>Spese fisse</span><b>−${formatCents(fisse)}</b></div>
+        ${fixTotali}
         <div><span>Spese aggiunte</span><b>−${formatCents(variabili)}</b></div>
       </div>
       ${voci ? `<ul class="exp-list">${voci}</ul>` : '<div class="net-note">Le spese si aggiungono dal registro, col tasto «− aggiungi una spesa».</div>'}
@@ -455,7 +488,7 @@ export function renderMonth(container, state, onDataChanged) {
         <div class="stat"><div class="v">${grosse.pctVisits}%</div><div class="l">delle visite è da 50 € in su</div></div>
         <div class="stat"><div class="v">${grosse.pctTotal}%</div><div class="l">dell'incasso arriva da quelle</div></div>
       </div>
-      <div class="net-note">${grosse.bigVisits} visite su ${grosse.visits} · ${formatCents(grosse.bigTotal)} su ${formatCents(grosse.total)}</div>
+      <div class="net-note">${visitLabel(grosse.bigVisits)} su ${grosse.visits} · ${formatCents(grosse.bigTotal)} su ${formatCents(grosse.total)}</div>
     </div>
 
     <div class="card">
@@ -479,11 +512,12 @@ export function renderMonth(container, state, onDataChanged) {
     <div class="card">
       <h3>Export e backup</h3>
       <div class="export-row">
-        <button id="exp-month" type="button">Esporta questo mese (CSV)</button>
-        <button id="exp-all" type="button">Esporta tutto (CSV)</button>
+        <button id="exp-month" type="button">Incassi del mese (CSV)</button>
+        <button id="exp-all" type="button">Tutti gli incassi (CSV)</button>
         <button id="exp-json" type="button">Backup completo (JSON)</button>
         <button id="imp-json" type="button" class="import">Ripristina da backup</button>
       </div>
+      <div class="net-note">Il CSV contiene solo gli incassi. Le spese e le righe cestinate stanno nel backup JSON, che è anche l'unico file che si può ripristinare.</div>
     </div>
 
     ${dangerZoneHTML(state)}

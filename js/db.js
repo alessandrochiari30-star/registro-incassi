@@ -13,6 +13,7 @@
 // perfettamente salvati.
 
 import { reconcile } from './backup.js';
+import { MSG_SAVE_FAILED, MSG_MIRROR_FAILED, MSG_PRIMARY_FAILED } from './channels.js';
 
 const DB_NAME = 'registro-incassi';
 const DB_VERSION = 2; // v2: aggiunto lo store 'extras'
@@ -28,6 +29,41 @@ function mirrorError(cause) {
   err.name = 'MirrorError';
   err.cause = cause;
   return err;
+}
+
+// L'archivio primario ha rifiutato la scrittura ma la copia di
+// sicurezza l'ha presa: il dato esiste, su una gamba sola.
+function primaryError(cause) {
+  const err = new Error('archivio primario non scritto');
+  err.name = 'PrimaryError';
+  err.cause = cause;
+  return err;
+}
+
+// Distinguere i guai è la regola più importante di questo file, e prima
+// era ricopiata a mano in otto punti diversi: in due era stata
+// dimenticata, e lì un salvataggio riuscito veniva trattato come
+// fallito. Si chiede qui, in un posto solo.
+export function isMirrorError(err) {
+  return err?.name === 'MirrorError';
+}
+
+export function isPrimaryError(err) {
+  return err?.name === 'PrimaryError';
+}
+
+// La domanda che conta per chi ha appena scritto: il dato è da qualche
+// parte su questo telefono? Se sì il gesto va portato a termine e la
+// riga NON va tolta dalla memoria, altrimenti si cancellerebbe qualcosa
+// che è stato salvato.
+export function isSaved(err) {
+  return isMirrorError(err) || isPrimaryError(err);
+}
+
+export function writeMessage(err) {
+  if (isMirrorError(err)) return MSG_MIRROR_FAILED;
+  if (isPrimaryError(err)) return MSG_PRIMARY_FAILED;
+  return MSG_SAVE_FAILED;
 }
 
 function open() {
@@ -177,9 +213,14 @@ export async function saveEntry(entry, allEntries) {
     }
   });
   if (err) {
-    // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
-    try { mirrorWrite(allEntries); } catch { /* niente da fare */ }
-    throw err;
+    // IndexedDB ko: la copia di sicurezza diventa l'unico posto dove il
+    // dato può stare, quindi ci si scrive l'insieme completo. Se ci
+    // riesce il dato NON è perduto e chi ha chiamato deve saperlo con
+    // un errore diverso: trattarlo come fallimento totale gli faceva
+    // togliere dalla memoria una riga che il mirror aveva salvato, e
+    // che alla riapertura tornava su da sola.
+    try { mirrorWrite(allEntries); } catch { throw err; }
+    throw primaryError(err);
   }
   try { mirrorWrite(allEntries); } catch (e) { throw mirrorError(e); }
 }
@@ -198,8 +239,8 @@ export async function saveExtra(extra, allExtras) {
     }
   });
   if (err) {
-    try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch { /* niente da fare */ }
-    throw err;
+    try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch { throw err; }
+    throw primaryError(err);
   }
   try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch (e) { throw mirrorError(e); }
 }
@@ -222,8 +263,8 @@ export async function saveAll(entries) {
     if (missingIds(entries, back) > 0) throw new Error('read-back incompleto');
   });
   if (err) {
-    try { mirrorWrite(entries); } catch { /* niente da fare */ }
-    throw err;
+    try { mirrorWrite(entries); } catch { throw err; }
+    throw primaryError(err);
   }
   try { mirrorWrite(entries); } catch (e) { throw mirrorError(e); }
 }
@@ -237,8 +278,8 @@ export async function saveAllExtras(extras) {
     if (missingIds(extras, back) > 0) throw new Error('read-back incompleto');
   });
   if (err) {
-    try { mirrorWrite(extras, MIRROR_KEY_X); } catch { /* niente da fare */ }
-    throw err;
+    try { mirrorWrite(extras, MIRROR_KEY_X); } catch { throw err; }
+    throw primaryError(err);
   }
   try { mirrorWrite(extras, MIRROR_KEY_X); } catch (e) { throw mirrorError(e); }
 }
