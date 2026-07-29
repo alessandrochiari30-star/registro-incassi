@@ -8,8 +8,9 @@ import { CHANNELS } from './channels.js';
 const CH_COLORS = { B: 'var(--ch-B)', S: 'var(--ch-S)', R: 'var(--ch-R)', C: 'var(--ch-C)' };
 
 // Quali giorni portano il numero sotto l'asse: uno ogni tre (1, 4, 7…)
-// più l'ultimo del mese, se non cade già nella serie e non finisce
-// appiccicato all'etichetta precedente.
+// più l'ultimo del mese, se non cade già nella serie e dista almeno
+// due giorni dall'etichetta precedente — a un giorno di distanza i due
+// numeri si toccherebbero.
 export function axisDays(n) {
   const days = [];
   for (let d = 1; d <= n; d += 3) days.push(d);

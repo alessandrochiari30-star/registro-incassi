@@ -18,7 +18,7 @@ export const DEFAULT_FIXED_CENTS = 135_036;
 export const DEFAULT_FIXED_LABEL = 'Spese fisse del mese';
 
 export const DEFAULT_EXPENSE_LABEL = 'spesa';
-const MAX_LABEL = 40;
+export const MAX_LABEL = 40;
 
 // "40 shopping", "12,50 benzina", "spesa 100", "40". L'importo può
 // stare davanti o in fondo: si scrive di corsa, non si compila un

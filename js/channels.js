@@ -26,5 +26,16 @@ export const THRESHOLD_CENTS = 8_500_000;
 // barra. Numero del dossier 2026: ricontrollarlo ogni anno.
 export const INPS_MIN_CENTS = 2_807_200;
 
+// Soglia oltre la quale una visita è un lavoro prenotato e non un
+// passaggio veloce. Taglio scelto sui numeri del dossier 2025: la
+// visita media pagata in elettronico stava a 76,82 €, quella in
+// contante a 24,29 €, e 50 € cade nel vuoto fra le due.
+export const BIG_VISIT_CENTS = 5_000;
+
 export const MSG_SAVE_FAILED =
   'ATTENZIONE: salvataggio non riuscito. Non chiudere l\'app e fai subito un export dei dati.';
+
+// Il dato è salvato, manca solo la copia di sicurezza: guaio vero ma
+// molto meno grave, e con parole diverse.
+export const MSG_MIRROR_FAILED =
+  'Copia di sicurezza non aggiornata: i dati sono salvati, ma conviene fare un export.';

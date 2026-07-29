@@ -1,26 +1,23 @@
 // Riepilogo mensile: la schermata che si guarda con calma.
 // Ricostruita da zero a ogni apertura, sempre derivata dalle righe.
 
-import { formatCents, todayISO, daysInMonth } from './money.js';
+import { formatCents, todayISO } from './money.js';
 import { monthStats, yearDeclared, prevMonthDelta, bigVisitShare } from './totals.js';
 import { dailyBarsSVG, channelBarSVG, thresholdBarSVG } from './chart.js';
 import { toCSV, toJSON } from './exporter.js';
 import { parseBackup, mergeBackup } from './backup.js';
-import { saveAll, saveAllExtras, saveExtra, wipeAll } from './db.js';
+import { initDB, saveAll, saveAllExtras, saveExtra, wipeAll } from './db.js';
 import { resetGate, gateHint } from './reset.js';
 import { showToast, showBanner } from './ui.js';
-import { CHANNELS, CH_SHORT, THRESHOLD_CENTS, INPS_MIN_CENTS, MSG_SAVE_FAILED } from './channels.js';
+import {
+  CHANNELS, CH_SHORT, THRESHOLD_CENTS, INPS_MIN_CENTS, BIG_VISIT_CENTS,
+  MSG_SAVE_FAILED, MSG_MIRROR_FAILED,
+} from './channels.js';
 import { parseAmount } from './parser.js';
 import {
   FIXED_ID, DEFAULT_FIXED_LABEL, fixedEntry, fixedTotal,
   variableItems, variableTotal, monthBalance, breakEvenDay,
 } from './expenses.js';
-
-// Soglia della "visita grossa": sopra questo importo la visita è un
-// lavoro prenotato, sotto è un passaggio veloce. Taglio scelto sui
-// numeri del dossier 2025 (76,82 € di media sull'elettronico contro
-// 24,29 € sul contante).
-const BIG_VISIT_CENTS = 5_000;
 
 // Backup fatto durante questa apertura dell'app: sblocca il secondo
 // lucchetto dell'azzeramento. Vive in memoria apposta — chiusa l'app
@@ -131,7 +128,9 @@ async function importBackupFile(file, container, state, onDataChanged) {
     showToast(IMPORT_ERRORS[parsed.error], null, 8000);
     return;
   }
-  if (parsed.entries.length === 0) {
+  // Un backup può contenere solo uscite (per esempio fatto subito dopo
+  // un azzeramento): vuoto vuol dire vuoto di tutto.
+  if (parsed.entries.length === 0 && (parsed.extras?.length ?? 0) === 0) {
     showToast('Il file è un backup valido ma non contiene righe.', null, 8000);
     return;
   }
@@ -141,18 +140,36 @@ async function importBackupFile(file, container, state, onDataChanged) {
     showToast('Niente da ripristinare: le righe del backup sono già tutte qui.', null, 8000);
     return;
   }
+  // Ogni pezzo salvato entra subito nello stato: se il secondo salvataggio
+  // fallisce, la memoria non deve restare più povera del disco, altrimenti
+  // la scrittura successiva specchierebbe l'insieme ridotto.
   try {
     await saveAll(entries);
+    state.entries = entries;
     if (merged.added > 0) await saveAllExtras(merged.entries);
-  } catch {
-    showBanner(MSG_SAVE_FAILED);
+    state.extras = merged.entries;
+  } catch (err) {
+    showBanner(err?.name === 'MirrorError' ? MSG_MIRROR_FAILED : MSG_SAVE_FAILED);
+    onDataChanged?.();
+    renderMonth(container, state, onDataChanged);
     return;
   }
-  state.entries = entries;
-  state.extras = merged.entries;
   onDataChanged?.();
   renderMonth(container, state, onDataChanged);
   showToast(importMessage(added, existing, merged.added), null, 8000);
+}
+
+// Testo scritto dall'utente dentro l'HTML generato: va sempre passato
+// di qui. Le voci di spesa possono arrivare da un file di backup, che
+// è l'unico canale con cui entra roba scritta altrove — senza escape
+// una label manomessa eseguirebbe codice nell'app che custodisce i
+// dati.
+export function esc(text) {
+  return String(text ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 // "gio 14 ago" — giorno per esteso ma corto, come si legge a voce.
@@ -205,6 +222,7 @@ function wireFixedCosts(container, state, onDataChanged) {
       return;
     }
     let x = fixedEntry(state.extras);
+    const prima = x ? x.amountCents : null;
     if (x) {
       x.amountCents = cents;
     } else {
@@ -221,9 +239,17 @@ function wireFixedCosts(container, state, onDataChanged) {
     }
     try {
       await saveExtra(x, state.extras);
-    } catch {
-      showBanner(MSG_SAVE_FAILED);
-      return;
+    } catch (err) {
+      if (err?.name !== 'MirrorError') {
+        // non salvata: si torna al valore di prima invece di mostrarne
+        // uno che sul disco non esiste
+        if (prima === null) state.extras = state.extras.filter((e) => e.id !== FIXED_ID);
+        else x.amountCents = prima;
+        showBanner(MSG_SAVE_FAILED);
+        renderMonth(container, state, onDataChanged);
+        return;
+      }
+      showBanner(MSG_MIRROR_FAILED);
     }
     onDataChanged?.();
     renderMonth(container, state, onDataChanged);
@@ -243,16 +269,19 @@ function wireDangerZone(container, state, onDataChanged) {
   const input = container.querySelector('#dz-phrase');
   const btnWipe = container.querySelector('#dz-wipe');
   const hint = container.querySelector('#dz-hint');
-  // Conta tutto quello che sparirebbe: incassi e uscite.
-  const rowCount = state.entries.length + state.extras.length;
+  // Conta tutto quello che sparirebbe — incassi, spese e voce fissa,
+  // cestinate comprese — e lo dice diviso, perché "N righe" da solo
+  // era un numero più alto di quello che l'utente vede in giro.
+  const nIncassi = state.entries.length;
+  const nUscite = state.extras.length;
+  const rowCount = nIncassi + nUscite;
+  const conteggio = `${nIncassi} ${nIncassi === 1 ? 'incasso' : 'incassi'} e ${nUscite} ${nUscite === 1 ? 'voce di spesa' : 'voci di spesa'}`;
 
   const disarm = () => {
     clearTimeout(wireDangerZone.timer);
     btnWipe.dataset.armed = '';
     btnWipe.classList.remove('armed');
-    btnWipe.textContent = rowCount === 1
-      ? '3 · Cancella 1 riga per sempre'
-      : `3 · Cancella ${rowCount} righe per sempre`;
+    btnWipe.textContent = `3 · Cancella ${conteggio}`;
   };
 
   const refreshGate = () => {
@@ -296,8 +325,16 @@ function wireDangerZone(container, state, onDataChanged) {
     try {
       await wipeAll();
     } catch {
-      showBanner('ATTENZIONE: azzeramento non riuscito. I dati sono ancora tutti al loro posto.');
-      disarm();
+      // Può essere fallito a metà: si rilegge lo stato dal disco invece
+      // di continuare a mostrare quello di prima.
+      showBanner('ATTENZIONE: azzeramento non riuscito. Controlla i dati e fai subito un export.');
+      try {
+        const riletto = await initDB();
+        state.entries = riletto.entries;
+        state.extras = riletto.extras;
+      } catch { /* si tiene quello che c'è in memoria */ }
+      onDataChanged?.();
+      renderMonth(container, state, onDataChanged);
       return;
     }
     state.entries = [];
@@ -305,12 +342,68 @@ function wireDangerZone(container, state, onDataChanged) {
     backupOkAt = null;
     onDataChanged?.();
     renderMonth(container, state, onDataChanged);
-    showToast(
-      rowCount === 1 ? 'Azzerato: 1 riga cancellata.' : `Azzerato: ${rowCount} righe cancellate.`,
-      null,
-      8000,
-    );
+    showToast(`Azzerato: cancellati ${conteggio}.`, null, 8000);
   });
+}
+
+// Card "Quanto resta": il conto del mese e il giorno in cui le spese
+// sono coperte. Tono neutro per scelta — informa, non fa la predica.
+function netCardHTML(state, ym, incomeCents, perDay) {
+  const fisse = fixedTotal(state.extras);
+  const variabili = variableTotal(state.extras, ym);
+  const bilancio = monthBalance({ incomeCents, fixedCents: fisse, variableCents: variabili });
+  const pareggio = breakEvenDay(perDay, bilancio.outflow);
+  const pareggioTesto = bilancio.outflow === 0
+    ? 'Nessuna spesa segnata in questo mese.'
+    : pareggio.day
+      ? `Spese del mese coperte dal ${pareggio.day}.`
+      : `Ancora ${formatCents(pareggio.missingCents)} e le spese del mese sono coperte.`;
+  const voci = variableItems(state.extras, ym)
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .map((x) => `<li><span>${Number(x.date.slice(8))} · ${esc(x.label)}</span><b>${formatCents(x.amountCents)}</b></li>`)
+    .join('');
+
+  return `
+    <div class="card">
+      <h3>Quanto resta</h3>
+      <div class="net-big ${bilancio.netCents >= 0 ? 'pos' : ''}">${bilancio.netCents < 0 ? '−' : ''}${formatCents(Math.abs(bilancio.netCents))}</div>
+      <div class="net-note">${pareggioTesto}</div>
+      <div class="fix-row">
+        <label for="fix-amount">Spese fisse del mese</label>
+        <input id="fix-amount" type="text" inputmode="decimal" value="${(fisse / 100).toFixed(2).replace('.', ',')}">
+        <button id="fix-save" type="button">Salva</button>
+      </div>
+      <div class="net-rows">
+        <div><span>Incassi</span><b>${formatCents(incomeCents)}</b></div>
+        <div><span>Spese fisse</span><b>−${formatCents(fisse)}</b></div>
+        <div><span>Spese aggiunte</span><b>−${formatCents(variabili)}</b></div>
+      </div>
+      ${voci ? `<ul class="exp-list">${voci}</ul>` : '<div class="net-note">Le spese si aggiungono dal registro, col tasto «− aggiungi una spesa».</div>'}
+    </div>`;
+}
+
+// Zona pericolosa: esiste solo se c'è qualcosa da cancellare.
+function dangerZoneHTML(state) {
+  if (state.entries.length + state.extras.length === 0) return '';
+  return `
+    <div class="card danger-zone" id="danger-zone">
+      <h3>Zona pericolosa</h3>
+      <p class="dz-note">Azzerare cancella <strong>tutte</strong> le righe di tutti i mesi, cestino e spese comprese. Non si torna indietro: dopo esiste solo il file di backup.</p>
+      <ol class="dz-steps">
+        <li>
+          <button id="dz-backup" type="button">1 · Fai il backup adesso</button>
+          <span id="dz-backup-state" class="dz-state"></span>
+        </li>
+        <li>
+          <label for="dz-phrase">2 · Scrivi <b>AZZERA</b> qui sotto</label>
+          <input id="dz-phrase" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="AZZERA">
+        </li>
+        <li>
+          <button id="dz-wipe" type="button" class="dz-wipe" disabled></button>
+          <span id="dz-hint" class="dz-state"></span>
+        </li>
+      </ol>
+    </div>`;
 }
 
 export function renderMonth(container, state, onDataChanged) {
@@ -326,20 +419,6 @@ export function renderMonth(container, state, onDataChanged) {
 
   const legend = CHANNELS
     .map((c) => `<span><span class="dot" style="background:var(--ch-${c})"></span>${c} ${CH_SHORT[c]} · ${formatCents(s.byChannel[c])}</span>`)
-    .join('');
-
-  // Uscite del mese: la voce fissa (una sola, modificabile) e le spese
-  // aggiunte giorno per giorno.
-  const fisse = fixedTotal(state.extras);
-  const variabili = variableTotal(state.extras, ym);
-  const bilancio = monthBalance({ incomeCents: s.total, fixedCents: fisse, variableCents: variabili });
-  const pareggio = breakEvenDay(s.perDay, bilancio.outflow);
-  const pareggioTesto = pareggio.day
-    ? `Spese del mese coperte dal ${pareggio.day}.`
-    : `Ancora ${formatCents(pareggio.missingCents)} e le spese del mese sono coperte.`;
-  const speseVoci = variableItems(state.extras, ym)
-    .sort((a, b) => (a.date < b.date ? 1 : -1))
-    .map((x) => `<li><span>${Number(x.date.slice(8))} · ${x.label}</span><b>${formatCents(x.amountCents)}</b></li>`)
     .join('');
 
   const grosse = bigVisitShare(state.entries, ym, BIG_VISIT_CENTS);
@@ -368,22 +447,7 @@ export function renderMonth(container, state, onDataChanged) {
       <div id="day-readout" class="day-readout" aria-live="polite">${dayReadout(null)}</div>
     </div>
 
-    <div class="card">
-      <h3>Quanto resta</h3>
-      <div class="net-big ${bilancio.netCents >= 0 ? 'pos' : ''}">${bilancio.netCents < 0 ? '−' : ''}${formatCents(Math.abs(bilancio.netCents))}</div>
-      <div class="net-note">${pareggioTesto}</div>
-      <div class="fix-row">
-        <label for="fix-amount">Spese fisse del mese</label>
-        <input id="fix-amount" type="text" inputmode="decimal" value="${(fisse / 100).toFixed(2).replace('.', ',')}">
-        <button id="fix-save" type="button">Salva</button>
-      </div>
-      <div class="net-rows">
-        <div><span>Incassi</span><b>${formatCents(s.total)}</b></div>
-        <div><span>Spese fisse</span><b>−${formatCents(fisse)}</b></div>
-        <div><span>Spese aggiunte</span><b>−${formatCents(variabili)}</b></div>
-      </div>
-      ${speseVoci ? `<ul class="exp-list">${speseVoci}</ul>` : '<div class="net-note">Le spese si aggiungono dal registro, col tasto «− aggiungi una spesa».</div>'}
-    </div>
+    ${netCardHTML(state, ym, s.total, s.perDay)}
 
     <div class="card">
       <h3>Da dove arriva il mese</h3>
@@ -422,25 +486,7 @@ export function renderMonth(container, state, onDataChanged) {
       </div>
     </div>
 
-    ${state.entries.length + state.extras.length === 0 ? '' : `
-    <div class="card danger-zone" id="danger-zone">
-      <h3>Zona pericolosa</h3>
-      <p class="dz-note">Azzerare cancella <strong>tutte</strong> le righe di tutti i mesi, cestino compreso. Non si torna indietro: dopo esiste solo il file di backup.</p>
-      <ol class="dz-steps">
-        <li>
-          <button id="dz-backup" type="button">1 · Fai il backup adesso</button>
-          <span id="dz-backup-state" class="dz-state"></span>
-        </li>
-        <li>
-          <label for="dz-phrase">2 · Scrivi <b>AZZERA</b> qui sotto</label>
-          <input id="dz-phrase" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="AZZERA">
-        </li>
-        <li>
-          <button id="dz-wipe" type="button" class="dz-wipe" disabled></button>
-          <span id="dz-hint" class="dz-state"></span>
-        </li>
-      </ol>
-    </div>`}
+    ${dangerZoneHTML(state)}
   `;
 
   // Input file separato dal bottone. Accept largo apposta: iOS Safari

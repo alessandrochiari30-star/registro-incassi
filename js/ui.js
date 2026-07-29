@@ -1,7 +1,7 @@
 // Rendering della schermata registro. Funzioni pure DOM: ricevono lo
 // stato, ridisegnano. Nessuno stato proprio oltre il timer del toast.
 
-import { formatCents, todayISO, daysInMonth } from './money.js';
+import { formatCents, todayISO, daysInMonth, monthOf } from './money.js';
 import { dayTotals, yearDeclared } from './totals.js';
 import { CHANNELS, CH_SHORT, THRESHOLD_CENTS } from './channels.js';
 import { dayVariableItems, dailyFixedShare, fixedTotal, dayBalance } from './expenses.js';
@@ -85,7 +85,7 @@ export function renderDay(entries, extras, dateISO, onRowTap, onExpenseTap) {
 export function renderDayNet(entries, extras, dateISO) {
   const income = dayTotals(entries, dateISO).total;
   const spese = dayVariableItems(extras, dateISO).reduce((s, x) => s + x.amountCents, 0);
-  const quota = dailyFixedShare(fixedTotal(extras), daysInMonth(dateISO.slice(0, 7)));
+  const quota = dailyFixedShare(fixedTotal(extras), daysInMonth(monthOf(dateISO)));
   const { netCents } = dayBalance({ incomeCents: income, variableCents: spese, fixedShareCents: quota });
 
   const el = $('day-net');
@@ -144,12 +144,17 @@ export function showExportReminder(visible) {
   $('export-reminder').hidden = !visible;
 }
 
-export function renderTrash(entries, onRestore) {
+// Cestino: incassi e spese cancellate insieme. Prima le spese finivano
+// in un limbo — cancellate, invisibili, non ripristinabili — e
+// continuavano a contare fra le righe da azzerare.
+export function renderTrash(entries, extras, onRestore, onRestoreExpense) {
   const list = $('trash-list');
   list.replaceChildren();
   const rows = entries
     .filter((e) => e.deletedAt != null)
-    .sort((a, b) => b.deletedAt - a.deletedAt);
+    .map((e) => ({ kind: 'in', e }))
+    .concat((extras ?? []).filter((x) => x.deletedAt != null).map((x) => ({ kind: 'out', e: x })))
+    .sort((a, b) => b.e.deletedAt - a.e.deletedAt);
   // Il bottone di svuotamento riparte sempre dal primo tempo: mai
   // trovarlo già "armato" riaprendo il cestino.
   const emptyBtn = $('trash-empty');
@@ -169,21 +174,23 @@ export function renderTrash(entries, onRestore) {
     list.append(li);
     return;
   }
-  for (const e of rows) {
+  for (const { kind, e } of rows) {
     const li = document.createElement('li');
     const badge = document.createElement('span');
     badge.className = 'badge';
-    badge.dataset.ch = e.channel;
-    badge.textContent = e.channel;
+    badge.dataset.ch = kind === 'in' ? e.channel : 'X';
+    badge.textContent = kind === 'in' ? e.channel : '−';
     const label = document.createElement('span');
     label.className = 'amount';
-    label.textContent = `${formatCents(e.amountCents)} · ${e.date} · ${CH_SHORT[e.channel]}`;
+    label.textContent = kind === 'in'
+      ? `${formatCents(e.amountCents)} · ${e.date} · ${CH_SHORT[e.channel]}`
+      : `${formatCents(e.amountCents)} · ${e.date} · ${e.label}`;
     label.style.flex = '1';
     const restore = document.createElement('button');
     restore.className = 'restore';
     restore.type = 'button';
     restore.textContent = 'Ripristina';
-    restore.addEventListener('click', () => onRestore(e.id));
+    restore.addEventListener('click', () => (kind === 'in' ? onRestore(e.id) : onRestoreExpense(e.id)));
     li.append(badge, label, restore);
     list.append(li);
   }

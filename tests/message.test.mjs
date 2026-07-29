@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { importMessage } from '../js/month.js';
+import { importMessage, esc } from '../js/month.js';
+
+// Le voci di spesa arrivano anche da file di backup: se finiscono
+// nell'HTML senza escape, un file manomesso esegue codice nell'app che
+// custodisce i dati.
+test('esc: il testo dell\'utente non può diventare HTML', () => {
+  assert.equal(esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(esc('spesa "grossa" & altro'), 'spesa &quot;grossa&quot; &amp; altro');
+  assert.equal(esc('shopping'), 'shopping');
+  assert.equal(esc(null), '');
+});
 
 test('messaggio di import: solo incassi', () => {
   assert.equal(importMessage(1, 0), 'Backup caricato: 1 riga ripristinata.');

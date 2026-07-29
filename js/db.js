@@ -1,9 +1,16 @@
 // Persistenza. IndexedDB è la copia primaria; a ogni scrittura il set
-// completo viene specchiato in localStorage. Ogni write ha read-back di
-// verifica e un retry: un fallimento qui deve emergere, mai sparire.
+// completo viene specchiato in localStorage. Ogni scrittura ha
+// read-back di verifica e un retry: un fallimento qui deve emergere,
+// mai sparire.
 //
 // Due archivi con le stesse regole: 'entries' (gli incassi) e 'extras'
-// (le uscite, fisse e variabili). Stesso patto, stesso mirror.
+// (le uscite, fisse e variabili).
+//
+// Il mirror è la rete di sicurezza, non la copia primaria: se salta
+// solo lui il dato è comunque salvato, e chi chiama riceve un errore
+// con name 'MirrorError' per dirlo con parole diverse. Confondere i
+// due casi faceva comparire "salvataggio non riuscito" su dati
+// perfettamente salvati.
 
 import { reconcile } from './backup.js';
 
@@ -16,6 +23,13 @@ const MIRROR_KEY_X = 'ri-extras';
 
 let db = null;
 
+function mirrorError(cause) {
+  const err = new Error('mirror non scritto');
+  err.name = 'MirrorError';
+  err.cause = cause;
+  return err;
+}
+
 function open() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -26,7 +40,17 @@ function open() {
       if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
       if (!d.objectStoreNames.contains(STORE_X)) d.createObjectStore(STORE_X, { keyPath: 'id' });
     };
-    req.onsuccess = () => resolve(req.result);
+    // Un'altra scheda aperta sulla versione vecchia blocca l'upgrade:
+    // senza questo la promise non si risolverebbe mai e l'app
+    // resterebbe appesa senza dire niente.
+    req.onblocked = () => reject(new Error('aggiornamento bloccato da un\'altra scheda aperta'));
+    req.onsuccess = () => {
+      const d = req.result;
+      // Se un'altra scheda chiede un upgrade, questa connessione si
+      // toglie di mezzo invece di bloccarla.
+      d.onversionchange = () => { d.close(); db = null; };
+      resolve(d);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -83,19 +107,36 @@ function mirrorWrite(entries, key = MIRROR_KEY) {
   localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), entries }));
 }
 
+// Scrittura su IndexedDB con read-back e un retry, poi mirror. Il
+// mirror sta FUORI dal ciclo dei tentativi: se lancia lui, il dato è
+// già al sicuro nell'archivio primario e non ha senso riprovare la
+// scrittura né dire che il salvataggio è fallito.
+async function writeWithRetry(attempt) {
+  let lastErr = null;
+  for (let i = 0; i < 2; i++) {
+    try {
+      await attempt();
+      return null;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  return lastErr;
+}
+
 // Apre il DB, riconcilia entrambi gli archivi col mirror e restituisce
-// lo stato di verità. Se è avvenuto un recupero, riallinea subito le
-// copie.
+// lo stato di verità. `idbDown` dice che l'archivio primario non si è
+// aperto: si sta lavorando sul solo mirror, e chi chiama deve dirlo.
 export async function initDB() {
   let idbEntries = null;
   let idbExtras = null;
+  let idbDown = false;
   try {
     db = await open();
     idbEntries = await idbGetAll(STORE);
     idbExtras = await idbGetAll(STORE_X);
   } catch {
-    idbEntries = idbEntries ?? null; // IndexedDB illeggibile: si va di mirror
-    idbExtras = idbExtras ?? null;
+    idbDown = true; // IndexedDB illeggibile: si va di mirror
   }
   const rec = reconcile(idbEntries, mirrorRead(MIRROR_KEY));
   const recX = reconcile(idbExtras, mirrorRead(MIRROR_KEY_X));
@@ -105,123 +146,131 @@ export async function initDB() {
       if (recX.recovered) for (const x of recX.entries) await idbPut(x, STORE_X);
     } catch { /* il mirror resta comunque la rete di sicurezza */ }
   }
+  let mirrorDown = false;
   try {
     mirrorWrite(rec.entries, MIRROR_KEY);
     mirrorWrite(recX.entries, MIRROR_KEY_X);
-  } catch { /* quota: segnalato altrove */ }
-  return { entries: rec.entries, extras: recX.entries, recovered: rec.recovered || recX.recovered };
+  } catch {
+    mirrorDown = true; // niente rete di sicurezza: va detto, non taciuto
+  }
+  return {
+    entries: rec.entries,
+    extras: recX.entries,
+    recovered: rec.recovered || recX.recovered,
+    idbDown,
+    mirrorDown,
+  };
 }
 
 // Scrive una riga (nuova o modificata) e specchia l'intero set.
-// Read-back + 1 retry; se fallisce tutto, lancia: il chiamante DEVE
-// mostrare l'errore, mai inghiottirlo.
+// Se fallisce IndexedDB lancia l'errore vero; se fallisce solo il
+// mirror lancia un MirrorError, che è un guaio diverso e più mite.
 export async function saveEntry(entry, allEntries) {
   if (!db) db = await open();
-  let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await idbPut(entry);
-      const back = await idbGet(entry.id);
-      if (!back || back.amountCents !== entry.amountCents ||
-          back.date !== entry.date || back.channel !== entry.channel ||
-          back.deletedAt !== entry.deletedAt) {
-        throw new Error('read-back non corrisponde');
-      }
-      mirrorWrite(allEntries);
-      return;
-    } catch (err) {
-      lastErr = err;
+  const err = await writeWithRetry(async () => {
+    await idbPut(entry);
+    const back = await idbGet(entry.id);
+    if (!back || back.amountCents !== entry.amountCents ||
+        back.date !== entry.date || back.channel !== entry.channel ||
+        back.deletedAt !== entry.deletedAt) {
+      throw new Error('read-back non corrisponde');
     }
+  });
+  if (err) {
+    // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
+    try { mirrorWrite(allEntries); } catch { /* niente da fare */ }
+    throw err;
   }
-  // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
-  try { mirrorWrite(allEntries); } catch { /* niente da fare */ }
-  throw lastErr;
+  try { mirrorWrite(allEntries); } catch (e) { throw mirrorError(e); }
 }
 
 // Stesso patto di saveEntry, per le uscite. Il read-back confronta i
 // campi che contano: importo, voce, data, cancellazione.
 export async function saveExtra(extra, allExtras) {
   if (!db) db = await open();
-  let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await idbPut(extra, STORE_X);
-      const back = await idbGet(extra.id, STORE_X);
-      if (!back || back.amountCents !== extra.amountCents ||
-          back.label !== extra.label || back.date !== extra.date ||
-          back.deletedAt !== extra.deletedAt) {
-        throw new Error('read-back non corrisponde');
-      }
-      mirrorWrite(allExtras, MIRROR_KEY_X);
-      return;
-    } catch (err) {
-      lastErr = err;
+  const err = await writeWithRetry(async () => {
+    await idbPut(extra, STORE_X);
+    const back = await idbGet(extra.id, STORE_X);
+    if (!back || back.amountCents !== extra.amountCents ||
+        back.label !== extra.label || back.date !== extra.date ||
+        back.deletedAt !== extra.deletedAt) {
+      throw new Error('read-back non corrisponde');
     }
+  });
+  if (err) {
+    try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch { /* niente da fare */ }
+    throw err;
   }
-  try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch { /* niente da fare */ }
-  throw lastErr;
+  try { mirrorWrite(allExtras, MIRROR_KEY_X); } catch (e) { throw mirrorError(e); }
+}
+
+// Read-back di un blocco: non basta contare le righe, servono proprio
+// gli id che si sono appena scritti. Su un ripristino da backup è la
+// verifica che conta.
+function missingIds(written, back) {
+  const presenti = new Set(back.map((e) => e.id));
+  return written.filter((e) => !presenti.has(e.id)).length;
 }
 
 // Scrittura in blocco (import da backup): tutte le righe in una sola
-// transazione, read-back di conteggio, poi mirror completo. Stesso
-// patto di saveEntry: se fallisce tutto, lancia e il chiamante segnala.
+// transazione, read-back per id, poi mirror completo.
 export async function saveAll(entries) {
   if (!db) db = await open();
-  let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await idbPutAll(entries);
-      const back = await idbGetAll();
-      if (back.length < entries.length) throw new Error('read-back incompleto');
-      mirrorWrite(entries);
-      return;
-    } catch (err) {
-      lastErr = err;
-    }
+  const err = await writeWithRetry(async () => {
+    await idbPutAll(entries);
+    const back = await idbGetAll();
+    if (missingIds(entries, back) > 0) throw new Error('read-back incompleto');
+  });
+  if (err) {
+    try { mirrorWrite(entries); } catch { /* niente da fare */ }
+    throw err;
   }
-  // IndexedDB ko: prova almeno a salvare il mirror prima di segnalare.
-  try { mirrorWrite(entries); } catch { /* niente da fare */ }
-  throw lastErr;
+  try { mirrorWrite(entries); } catch (e) { throw mirrorError(e); }
 }
 
-// Scrittura in blocco delle uscite (import da backup, o creazione
-// delle voci fisse di partenza).
+// Scrittura in blocco delle uscite (import da backup).
 export async function saveAllExtras(extras) {
   if (!db) db = await open();
-  let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await idbPutAll(extras, STORE_X);
-      const back = await idbGetAll(STORE_X);
-      if (back.length < extras.length) throw new Error('read-back incompleto');
-      mirrorWrite(extras, MIRROR_KEY_X);
-      return;
-    } catch (err) {
-      lastErr = err;
-    }
+  const err = await writeWithRetry(async () => {
+    await idbPutAll(extras, STORE_X);
+    const back = await idbGetAll(STORE_X);
+    if (missingIds(extras, back) > 0) throw new Error('read-back incompleto');
+  });
+  if (err) {
+    try { mirrorWrite(extras, MIRROR_KEY_X); } catch { /* niente da fare */ }
+    throw err;
   }
-  try { mirrorWrite(extras, MIRROR_KEY_X); } catch { /* niente da fare */ }
-  throw lastErr;
+  try { mirrorWrite(extras, MIRROR_KEY_X); } catch (e) { throw mirrorError(e); }
 }
 
-// Cancellazione definitiva (svuota cestino): toglie gli id indicati e
-// specchia ciò che resta. Read-back di verifica: se una riga è ancora
-// lì il mirror non viene toccato, così la prossima riconciliazione non
-// la resuscita in un insieme incoerente.
-export async function purgeEntries(ids, remaining) {
+// Cancellazione definitiva (svuota cestino): toglie gli id indicati dai
+// due archivi e specchia ciò che resta. Read-back di verifica: se una
+// riga è ancora lì i mirror non vengono toccati, così la prossima
+// riconciliazione non la resuscita in un insieme incoerente.
+export async function purgeAll({ entryIds = [], extraIds = [], remainingEntries, remainingExtras }) {
   if (!db) db = await open();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
-    for (const id of ids) store.delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error ?? new Error('transazione annullata'));
+  const err = await writeWithRetry(async () => {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE, STORE_X], 'readwrite');
+      for (const id of entryIds) tx.objectStore(STORE).delete(id);
+      for (const id of extraIds) tx.objectStore(STORE_X).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error ?? new Error('transazione annullata'));
+    });
+    const back = new Set((await idbGetAll()).map((e) => e.id));
+    const backX = new Set((await idbGetAll(STORE_X)).map((e) => e.id));
+    if (entryIds.some((id) => back.has(id)) || extraIds.some((id) => backX.has(id))) {
+      throw new Error('cancellazione incompleta');
+    }
   });
-  const back = await idbGetAll();
-  const superstiti = new Set(back.map((e) => e.id));
-  if (ids.some((id) => superstiti.has(id))) throw new Error('cancellazione incompleta');
-  mirrorWrite(remaining);
+  if (err) throw err;
+  try {
+    mirrorWrite(remainingEntries);
+    mirrorWrite(remainingExtras, MIRROR_KEY_X);
+  } catch (e) {
+    throw mirrorError(e);
+  }
 }
 
 // Azzeramento totale: incassi E uscite. Ordine obbligato: prima

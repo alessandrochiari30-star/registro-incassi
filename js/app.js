@@ -3,11 +3,11 @@
 
 import { parseAmount } from './parser.js';
 import { formatCents, todayISO } from './money.js';
-import { initDB, saveEntry, saveExtra, purgeEntries, requestPersistence } from './db.js';
+import { initDB, saveEntry, saveExtra, purgeAll, requestPersistence } from './db.js';
 import * as ui from './ui.js';
 import { renderMonth } from './month.js';
-import { CH_NAMES, MSG_SAVE_FAILED } from './channels.js';
-import { DEFAULT_EXPENSE_LABEL } from './expenses.js';
+import { CH_NAMES, MSG_SAVE_FAILED, MSG_MIRROR_FAILED } from './channels.js';
+import { parseExpenseInput, MAX_LABEL, DEFAULT_EXPENSE_LABEL } from './expenses.js';
 
 const EXPORT_REMINDER_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -25,11 +25,18 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- persistenza con segnalazione errori ----------
 
+// Un mirror non scritto non è un salvataggio fallito: il dato è
+// nell'archivio primario. Dirlo con le stesse parole spaventava per
+// niente e faceva fare export inutili.
+function reportWriteError(err) {
+  ui.showBanner(err?.name === 'MirrorError' ? MSG_MIRROR_FAILED : MSG_SAVE_FAILED);
+}
+
 async function persist(entry) {
   try {
     await saveEntry(entry, state.entries);
   } catch (err) {
-    ui.showBanner(MSG_SAVE_FAILED);
+    reportWriteError(err);
     throw err;
   }
 }
@@ -38,7 +45,7 @@ async function persistExtra(extra) {
   try {
     await saveExtra(extra, state.extras);
   } catch (err) {
-    ui.showBanner(MSG_SAVE_FAILED);
+    reportWriteError(err);
     throw err;
   }
 }
@@ -66,7 +73,18 @@ async function insert(channel) {
     deletedAt: null,
   };
   state.entries.push(entry);
-  await persist(entry);
+  try {
+    await persist(entry);
+  } catch (err) {
+    // Se non è finita su disco, la riga non deve restare sullo schermo:
+    // sparirebbe da sola alla riapertura. Con MirrorError invece il
+    // dato è salvato davvero, quindi resta dov'è.
+    if (err?.name !== 'MirrorError') {
+      state.entries = state.entries.filter((e) => e.id !== entry.id);
+      refreshRegistro();
+    }
+    return;
+  }
   state.buffer = '';
   refreshRegistro();
   ui.showToast(`${formatCents(cents)} ${CH_NAMES[channel]}`, () => undo(entry.id));
@@ -118,10 +136,17 @@ async function saveEdit() {
     $('edit-amount').style.borderColor = 'var(--danger)';
     return;
   }
+  const prima = { amountCents: e.amountCents, channel: e.channel, date: e.date };
   e.amountCents = cents;
   e.channel = $('edit-channel').value;
   e.date = date;
-  await persist(e);
+  try {
+    await persist(e);
+  } catch (err) {
+    if (err?.name !== 'MirrorError') Object.assign(e, prima); // su disco è rimasta la versione vecchia
+    refreshRegistro();
+    return;
+  }
   $('edit-sheet').close();
   refreshRegistro();
 }
@@ -154,14 +179,20 @@ function openExpense(id = null) {
 }
 
 async function saveExpense() {
-  const cents = parseAmount($('expense-amount').value);
+  const rawAmount = $('expense-amount').value;
+  const rawLabel = $('expense-label').value.trim();
+  // Chi scrive tutto di fila nel primo campo — "40 shopping" — non deve
+  // sbagliare: se la voce è vuota, l'importo si legge insieme al testo.
+  const insieme = rawLabel ? null : parseExpenseInput(rawAmount);
+  const cents = insieme ? insieme.amountCents : parseAmount(rawAmount);
   const date = $('expense-date').value;
   if (cents === null || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     $('expense-amount').style.borderColor = 'var(--danger)';
     return;
   }
-  const label = $('expense-label').value.trim().slice(0, 40) || DEFAULT_EXPENSE_LABEL;
+  const label = rawLabel.slice(0, MAX_LABEL) || insieme?.label || DEFAULT_EXPENSE_LABEL;
   let x = state.extras.find((e) => e.id === state.editingExpenseId);
+  const prima = x ? { amountCents: x.amountCents, label: x.label, date: x.date } : null;
   if (x) {
     x.amountCents = cents;
     x.label = label;
@@ -179,7 +210,17 @@ async function saveExpense() {
     state.extras.push(x);
     state.buffer = '';
   }
-  await persistExtra(x);
+  try {
+    await persistExtra(x);
+  } catch (err) {
+    if (err?.name !== 'MirrorError') {
+      // niente su disco: si torna esattamente com'era prima
+      if (prima) Object.assign(x, prima);
+      else state.extras = state.extras.filter((e) => e.id !== x.id);
+      refreshRegistro();
+    }
+    return;
+  }
   $('expense-sheet').close();
   refreshRegistro();
 }
@@ -188,7 +229,13 @@ async function deleteExpense() {
   const x = state.extras.find((e) => e.id === state.editingExpenseId);
   if (!x) return;
   x.deletedAt = Date.now();
-  await persistExtra(x);
+  try {
+    await persistExtra(x);
+  } catch (err) {
+    if (err?.name !== 'MirrorError') x.deletedAt = null;
+    refreshRegistro();
+    return;
+  }
   $('expense-sheet').close();
   refreshRegistro();
 }
@@ -198,10 +245,33 @@ async function deleteExpense() {
 async function restore(id) {
   const e = state.entries.find((x) => x.id === id);
   if (!e) return;
+  const prima = e.deletedAt;
   e.deletedAt = null;
-  await persist(e);
-  ui.renderTrash(state.entries, restore);
+  try {
+    await persist(e);
+  } catch (err) {
+    if (err?.name !== 'MirrorError') e.deletedAt = prima;
+  }
+  showTrash();
   refreshRegistro();
+}
+
+async function restoreExpense(id) {
+  const x = state.extras.find((e) => e.id === id);
+  if (!x) return;
+  const prima = x.deletedAt;
+  x.deletedAt = null;
+  try {
+    await persistExtra(x);
+  } catch (err) {
+    if (err?.name !== 'MirrorError') x.deletedAt = prima;
+  }
+  showTrash();
+  refreshRegistro();
+}
+
+function showTrash() {
+  ui.renderTrash(state.entries, state.extras, restore, restoreExpense);
 }
 
 // Svuota cestino in due tempi: il primo tocco arma il bottone, il
@@ -209,36 +279,52 @@ async function restore(id) {
 // si cancella niente. Le righe attive non vengono mai toccate.
 async function emptyTrash() {
   const btn = $('trash-empty');
-  const trashed = state.entries.filter((e) => e.deletedAt != null);
-  if (trashed.length === 0) return;
+  const trashedEntries = state.entries.filter((e) => e.deletedAt != null);
+  const trashedExtras = state.extras.filter((x) => x.deletedAt != null);
+  const quante = trashedEntries.length + trashedExtras.length;
+  if (quante === 0) return;
 
   if (btn.dataset.armed !== 'si') {
     btn.dataset.armed = 'si';
     btn.classList.add('armed');
-    btn.textContent = trashed.length === 1
+    btn.textContent = quante === 1
       ? 'Tocca di nuovo: cancello 1 riga per sempre'
-      : `Tocca di nuovo: cancello ${trashed.length} righe per sempre`;
+      : `Tocca di nuovo: cancello ${quante} righe per sempre`;
     clearTimeout(emptyTrash.timer);
     // Se ci ripensa e non tocca più, il bottone si disarma da solo.
-    emptyTrash.timer = setTimeout(() => ui.renderTrash(state.entries, restore), 6000);
+    emptyTrash.timer = setTimeout(showTrash, 6000);
     return;
   }
 
   clearTimeout(emptyTrash.timer);
-  const ids = trashed.map((e) => e.id);
-  const remaining = state.entries.filter((e) => e.deletedAt == null);
+  const remainingEntries = state.entries.filter((e) => e.deletedAt == null);
+  const remainingExtras = state.extras.filter((x) => x.deletedAt == null);
   try {
-    await purgeEntries(ids, remaining);
-  } catch {
-    ui.showBanner('ATTENZIONE: svuotamento non riuscito. I dati sono ancora tutti al loro posto.');
-    ui.renderTrash(state.entries, restore);
+    await purgeAll({
+      entryIds: trashedEntries.map((e) => e.id),
+      extraIds: trashedExtras.map((x) => x.id),
+      remainingEntries,
+      remainingExtras,
+    });
+  } catch (err) {
+    if (err?.name === 'MirrorError') {
+      // cancellazione avvenuta davvero: lo stato va aggiornato lo stesso
+      state.entries = remainingEntries;
+      state.extras = remainingExtras;
+      ui.showBanner(MSG_MIRROR_FAILED);
+    } else {
+      ui.showBanner('ATTENZIONE: svuotamento non riuscito. I dati sono ancora tutti al loro posto.');
+    }
+    showTrash();
+    refreshRegistro();
     return;
   }
-  state.entries = remaining;
-  ui.renderTrash(state.entries, restore);
+  state.entries = remainingEntries;
+  state.extras = remainingExtras;
+  showTrash();
   refreshRegistro();
   ui.showToast(
-    ids.length === 1 ? 'Cestino svuotato: 1 riga cancellata.' : `Cestino svuotato: ${ids.length} righe cancellate.`,
+    quante === 1 ? 'Cestino svuotato: 1 riga cancellata.' : `Cestino svuotato: ${quante} righe cancellate.`,
     null,
     4000,
   );
@@ -267,10 +353,17 @@ function checkExportReminder() {
 async function main() {
   if (!localStorage.getItem('ri-firstRun')) localStorage.setItem('ri-firstRun', String(Date.now()));
 
-  const { entries, extras, recovered } = await initDB();
+  const { entries, extras, recovered, idbDown, mirrorDown } = await initDB();
   state.entries = entries;
   state.extras = extras;
-  if (recovered) {
+  // Un archivio che non risponde non deve restare un fatto privato
+  // dell'app: se resta una copia sola, l'export manuale diventa
+  // l'unica rete e va detto subito.
+  if (idbDown) {
+    ui.showBanner('ATTENZIONE: l\'archivio principale non risponde. Stai lavorando sulla sola copia di sicurezza: fai un export appena puoi.');
+  } else if (mirrorDown) {
+    ui.showBanner(MSG_MIRROR_FAILED);
+  } else if (recovered) {
     ui.showBanner('Recupero automatico riuscito: i dati sono stati ripristinati dalla copia di sicurezza.');
   }
 
@@ -318,7 +411,7 @@ async function main() {
 
   // cestino
   $('btn-trash').addEventListener('click', () => {
-    ui.renderTrash(state.entries, restore);
+    showTrash();
     $('trash-sheet').showModal();
   });
   $('trash-empty').addEventListener('click', emptyTrash);
