@@ -102,6 +102,9 @@ async function undo(id) {
 }
 
 function onKey(k) {
+  // La conferma di prima non deve restare aperta mentre si scrive
+  // l'incasso dopo: il suo «Annulla» sta sopra i tasti dei canali.
+  ui.hideToast();
   if (k === 'del') {
     state.buffer = state.buffer.slice(0, -1);
   } else if (k === ',') {

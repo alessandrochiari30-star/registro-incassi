@@ -13,10 +13,12 @@ import {
   CHANNELS, CH_SHORT, THRESHOLD_CENTS, INPS_MIN_CENTS, BIG_VISIT_CENTS,
 } from './channels.js';
 import { parseAmount } from './parser.js';
+import { parseExpenseInput, DEFAULT_EXPENSE_LABEL } from './expenses.js';
 import {
   FIXED_ITEMS, fixedEntry, fixedAmount, fixedTotal,
   variableItems, variableTotal, monthBalance, breakEvenDay,
   workDaysInMonth, dailyFixedShare,
+  unexpectedItems, unexpectedTotal, unexpectedDate, UNEXPECTED_LABEL, MAX_LABEL,
 } from './expenses.js';
 
 // Backup fatto durante questa apertura dell'app: sblocca il secondo
@@ -270,6 +272,84 @@ function wireOneFixedCost(container, state, onDataChanged, item) {
   });
 }
 
+// Le impreviste del mese: si aggiungono (importo + descrizione) e si
+// cestinano una per una. Stesso patto di scrittura di tutto il resto:
+// se il disco non ha preso niente la riga non resta sullo schermo,
+// perché alla riapertura sparirebbe da sola.
+function wireUnexpected(container, state, onDataChanged) {
+  const ym = state.monthShown;
+  const amountEl = container.querySelector('#unexp-amount');
+  const labelEl = container.querySelector('#unexp-label');
+  const btn = container.querySelector('#unexp-add');
+  if (!amountEl || !labelEl || !btn) return;
+
+  btn.addEventListener('click', async () => {
+    // "320" col campo descrizione a parte, ma anche "320 dentista"
+    // buttato tutto nel primo campo: si scrive di corsa.
+    let cents = parseAmount(amountEl.value.trim());
+    let label = labelEl.value.trim();
+    if (cents === null) {
+      const parsed = parseExpenseInput(amountEl.value);
+      if (parsed) {
+        cents = parsed.amountCents;
+        if (!label && parsed.label !== DEFAULT_EXPENSE_LABEL) label = parsed.label;
+      }
+    }
+    // parseAmount rifiuta già lo zero: un imprevisto da 0 € non esiste.
+    if (cents === null) {
+      amountEl.style.borderColor = 'var(--danger)';
+      return;
+    }
+    const x = {
+      id: crypto.randomUUID(),
+      kind: 'unexp',
+      label: label.slice(0, MAX_LABEL) || UNEXPECTED_LABEL,
+      amountCents: cents,
+      date: unexpectedDate(ym),
+      createdAt: Date.now(),
+      deletedAt: null,
+    };
+    state.extras.push(x);
+    try {
+      await saveExtra(x, state.extras);
+    } catch (err) {
+      showBanner(writeMessage(err));
+      if (!isSaved(err)) {
+        state.extras = state.extras.filter((e) => e.id !== x.id);
+        renderMonth(container, state, onDataChanged);
+        return;
+      }
+    }
+    onDataChanged?.();
+    renderMonth(container, state, onDataChanged);
+    showToast(`${formatCents(cents)} · ${x.label}`);
+  });
+
+  // Cestinatura soft, come per gli incassi: la riga va nel cestino e si
+  // può ripristinare.
+  container.querySelector('.unexp-list')?.addEventListener('click', async (ev) => {
+    const id = ev.target.closest?.('.unexp-del')?.dataset.id;
+    if (!id) return;
+    const x = state.extras.find((e) => e.id === id);
+    if (!x) return;
+    const prima = x.deletedAt;
+    x.deletedAt = Date.now();
+    try {
+      await saveExtra(x, state.extras);
+    } catch (err) {
+      showBanner(writeMessage(err));
+      if (!isSaved(err)) {
+        x.deletedAt = prima;
+        renderMonth(container, state, onDataChanged);
+        return;
+      }
+    }
+    onDataChanged?.();
+    renderMonth(container, state, onDataChanged);
+    showToast('Spostata nel cestino.');
+  });
+}
+
 // Zona pericolosa. Tre lucchetti (backup, parola, bottone sbloccato)
 // più una conferma in due tempi sul bottone stesso, come nel cestino.
 // L'azzeramento non passa mai da una finestra di sistema: deve essere
@@ -370,7 +450,10 @@ function wireDangerZone(container, state, onDataChanged) {
 function netCardHTML(state, ym, incomeCents, perDay) {
   const fisse = fixedTotal(state.extras);
   const variabili = variableTotal(state.extras, ym);
-  const bilancio = monthBalance({ incomeCents, fixedCents: fisse, variableCents: variabili });
+  const impreviste = unexpectedTotal(state.extras, ym);
+  const bilancio = monthBalance({
+    incomeCents, fixedCents: fisse, variableCents: variabili, unexpectedCents: impreviste,
+  });
   const pareggio = breakEvenDay(perDay, bilancio.outflow);
   const pareggioTesto = bilancio.outflow === 0
     ? 'Nessuna spesa segnata in questo mese.'
@@ -399,6 +482,16 @@ function netCardHTML(state, ym, incomeCents, perDay) {
     .map((item) => `<div><span>${item.label}</span><b>−${formatCents(fixedAmount(state.extras, item.id))}</b></div>`)
     .join('');
 
+  // Le impreviste del mese mostrato: elenco con il cestino riga per
+  // riga, perché una spesa una tantum si sbaglia e si corregge.
+  const imprevisteVoci = unexpectedItems(state.extras, ym)
+    .map((x) => `<li>
+        <span>${esc(x.label)}</span>
+        <b>−${formatCents(x.amountCents)}</b>
+        <button class="unexp-del" type="button" data-id="${esc(x.id)}" aria-label="Cancella ${esc(x.label)}">🗑</button>
+      </li>`)
+    .join('');
+
   return `
     <div class="card">
       <h3>Quanto resta</h3>
@@ -406,9 +499,24 @@ function netCardHTML(state, ym, incomeCents, perDay) {
       <div class="net-note">${pareggioTesto}</div>
       ${fixRows}
       <div class="net-note">Una giornata deve coprire ${formatCents(quota)} di spese fisse: ${formatCents(fisse)} su ${giornateTesto} giornate di lavoro (sabato mezza, domenica chiusa).</div>
+
+      <div class="unexp">
+        <label for="unexp-amount">Spese impreviste</label>
+        <div class="unexp-fields">
+          <input id="unexp-amount" type="text" inputmode="decimal" placeholder="0,00" aria-label="Importo dell'imprevisto">
+          <input id="unexp-label" type="text" placeholder="cos'era (dentista, gomme…)" maxlength="${MAX_LABEL}" autocomplete="off" aria-label="Descrizione dell'imprevisto">
+        </div>
+        <button id="unexp-add" type="button">Aggiungi</button>
+        <div class="net-note">Valgono solo per ${monthLabel(ym)}: entrano nel conto del mese, la quota della giornata non cambia.</div>
+        ${imprevisteVoci
+          ? `<ul class="exp-list unexp-list">${imprevisteVoci}</ul>`
+          : ''}
+      </div>
+
       <div class="net-rows">
         <div><span>Incassi</span><b>${formatCents(incomeCents)}</b></div>
         ${fixTotali}
+        ${impreviste > 0 ? `<div><span>Impreviste</span><b>−${formatCents(impreviste)}</b></div>` : ''}
         <div><span>Spese aggiunte</span><b>−${formatCents(variabili)}</b></div>
       </div>
       ${voci ? `<ul class="exp-list">${voci}</ul>` : '<div class="net-note">Le spese si aggiungono dal registro, col tasto «− aggiungi una spesa».</div>'}
@@ -557,6 +665,7 @@ export function renderMonth(container, state, onDataChanged) {
 
   wireDailyChart(container, s.perDay);
   wireFixedCosts(container, state, onDataChanged);
+  wireUnexpected(container, state, onDataChanged);
   wireDangerZone(container, state, onDataChanged);
 
   fileInput.addEventListener('change', async () => {

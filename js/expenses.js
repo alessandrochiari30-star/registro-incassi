@@ -71,6 +71,30 @@ export function variableItems(extras, ym) {
   return alive(extras).filter((x) => x.kind === 'var' && x.date?.startsWith(ym + '-'));
 }
 
+// Le impreviste: dentiste, gomme, la caldaia. Appartengono al MESE, non
+// a un giorno e non alle fisse.
+// Perché una terza categoria e non una terza voce fissa: una fissa si
+// ripete ogni mese e alza la quota giornaliera per sempre, quindi un
+// imprevisto dimenticato lì dentro gonfia l'obiettivo di tutti i mesi
+// che vengono. Qui invece agosto riparte pulito, e la quota della
+// giornata (che si ricava dalle sole fisse) non si muove.
+export const UNEXPECTED_LABEL = 'imprevisto';
+
+// La data serve solo ad ancorare la riga al mese: è il primo del mese
+// mostrato, non il giorno della spesa. Non comparendo in nessuna
+// schermata di giornata, nessuno la legge come "spesa del 1°".
+export const unexpectedDate = (ym) => `${ym}-01`;
+
+export function unexpectedItems(extras, ym) {
+  return alive(extras)
+    .filter((x) => x.kind === 'unexp' && x.date?.startsWith(ym + '-'))
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function unexpectedTotal(extras, ym) {
+  return sum(unexpectedItems(extras, ym));
+}
+
 export function dayVariableItems(extras, iso) {
   return alive(extras).filter((x) => x.kind === 'var' && x.date === iso);
 }
@@ -133,10 +157,17 @@ export function dayBalance({ incomeCents = 0, variableCents = 0, fixedShareCents
   return { incomeCents, outflow, netCents: incomeCents - outflow };
 }
 
-// Conto del mese intero.
-export function monthBalance({ incomeCents = 0, fixedCents = 0, variableCents = 0 } = {}) {
-  const outflow = fixedCents + variableCents;
-  return { incomeCents, fixedCents, variableCents, outflow, netCents: incomeCents - outflow };
+// Conto del mese intero. Le impreviste entrano nell'uscita del mese
+// (e quindi nel netto e nel giorno di pareggio) ma non nella quota
+// giornaliera, che si ricava dalle sole fisse.
+export function monthBalance({
+  incomeCents = 0, fixedCents = 0, variableCents = 0, unexpectedCents = 0,
+} = {}) {
+  const outflow = fixedCents + variableCents + unexpectedCents;
+  return {
+    incomeCents, fixedCents, variableCents, unexpectedCents,
+    outflow, netCents: incomeCents - outflow,
+  };
 }
 
 // Il giorno in cui l'incasso cumulato del mese copre tutte le uscite

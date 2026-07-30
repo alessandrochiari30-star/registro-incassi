@@ -85,6 +85,25 @@ test('backup con uscite valide: fisse senza data, variabili con data', () => {
   assert.deepEqual(out.extras, extras);
 });
 
+test('backup con impreviste del mese: kind unexp, data al primo del mese', () => {
+  const extras = [x('u1', { kind: 'unexp', label: 'dentista', amountCents: 32000, date: '2026-07-01' })];
+  const raw = JSON.stringify({ exportedAt: '2026-07-30T20:00:00.000Z', entries: [r('a')], extras });
+  const out = parseBackup(raw);
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.extras, extras);
+});
+
+test('imprevista senza data -> file rifiutato (la data ancora la riga al mese)', () => {
+  const raw = JSON.stringify({
+    exportedAt: '2026-07-30',
+    entries: [r('a')],
+    extras: [x('u1', { kind: 'unexp', date: null })],
+  });
+  const out = parseBackup(raw);
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'righe');
+});
+
 test('una uscita malformata -> rifiuto di tutto il file, come per gli incassi', () => {
   const cases = [
     x('v1', { kind: 'altro' }),

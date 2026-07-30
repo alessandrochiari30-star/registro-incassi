@@ -274,10 +274,17 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #channel-keys button:active { filter: brightness(1.2); }
 
 /* ---------- toast ---------- */
+/* In basso, ma sopra il tasto della spesa: appoggiato al fondo dello
+   schermo copriva quel tasto per intero e il tocco cadeva sul toast —
+   sul bordo destro proprio su «Annulla», cancellando l'incasso appena
+   scritto. Misurato in browser, non ipotizzato.
+   Per la stessa ragione il toast non intercetta i tocchi: passano al
+   tasto che sta sotto. Solo «Annulla» li prende (vedi sotto). */
 #toast {
   position: fixed;
   left: 14px; right: 14px;
-  bottom: calc(230px + env(safe-area-inset-bottom));
+  bottom: calc(58px + env(safe-area-inset-bottom));
+  pointer-events: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -289,7 +296,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   box-shadow: 0 6px 24px rgba(0,0,0,0.35);
   z-index: 30;
 }
-#toast-undo { color: var(--accent); font-weight: 700; min-height: 44px; padding: 0 8px; }
+#toast-undo { color: var(--accent); font-weight: 700; min-height: 44px; padding: 0 8px; pointer-events: auto; }
 
 /* ---------- dialog ---------- */
 dialog {
@@ -419,6 +426,41 @@ dialog input, dialog select {
 .exp-list { list-style: none; margin-top: 10px; font-size: 13px; }
 .exp-list li { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; color: var(--ink-2); }
 .exp-list b { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ---------- spese impreviste (voci del mese) ---------- */
+.unexp { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.unexp > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+/* Importo stretto, descrizione tutto il resto: su 360px la descrizione
+   resta leggibile e il bottone sta su una riga sua, largo da centrare
+   col pollice. */
+.unexp-fields { display: grid; grid-template-columns: 96px 1fr; gap: 6px; }
+.unexp-fields input {
+  padding: 10px;
+  font-size: 16px; /* sotto i 16px iOS zooma al focus */
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+  min-width: 0;
+}
+.unexp-fields input:first-child { font-variant-numeric: tabular-nums; }
+#unexp-add {
+  margin-top: 6px;
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  font-weight: 600;
+}
+.unexp-list li { align-items: center; }
+.unexp-list span { flex: 1; }
+.unexp-del {
+  min-width: 44px; min-height: 44px;
+  background: none; border: 0;
+  font-size: 15px; line-height: 1;
+  opacity: 0.75;
+}
 
 /* ---------- grafico giornaliero toccabile ---------- */
 /* Ogni colonna è un bersaglio a tutta altezza: il dito non deve

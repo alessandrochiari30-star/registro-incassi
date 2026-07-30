@@ -119,8 +119,11 @@ export function setChannelsEnabled(enabled) {
 
 // Toast unico dell'app. Con onUndo mostra "Annulla"; senza è una
 // semplice conferma (o un avviso) che sparisce da sola dopo ms.
+// Due secondi di default: dopo ogni inserimento il toast è un lampo di
+// conferma, non una cosa da aspettare. Chi vuole più tempo per leggere
+// (errori di import, azzeramento) passa ms più alto.
 let toastTimer = null;
-export function showToast(text, onUndo = null, ms = 5000) {
+export function showToast(text, onUndo = null, ms = 2000) {
   const toast = $('toast');
   const undo = $('toast-undo');
   $('toast-text').textContent = text;
@@ -135,6 +138,16 @@ export function showToast(text, onUndo = null, ms = 5000) {
         onUndo();
       }
     : null;
+}
+
+// Chi ricomincia a digitare ha già visto la conferma: il toast se ne
+// va subito. Serve anche a togliere «Annulla» di mezzo — in basso si
+// sovrappone alla fascia dei canali, e un tocco su C mentre il toast è
+// ancora lì annullerebbe l'incasso di prima invece di scriverne uno
+// nuovo.
+export function hideToast() {
+  clearTimeout(toastTimer);
+  $('toast').hidden = true;
 }
 
 export function showBanner(text) {
@@ -189,9 +202,14 @@ export function renderTrash(entries, extras, onRestore, onRestoreExpense) {
     badge.textContent = kind === 'in' ? e.channel : '−';
     const label = document.createElement('span');
     label.className = 'amount';
+    // Le impreviste appartengono al mese, non a un giorno: mostrare
+    // "2026-07-01" farebbe credere che la spesa fosse del primo.
+    const quando = kind === 'in' || e.kind === 'var'
+      ? e.date
+      : (e.kind === 'unexp' ? String(e.date).slice(0, 7) : 'ogni mese');
     label.textContent = kind === 'in'
-      ? `${formatCents(e.amountCents)} · ${e.date} · ${CH_SHORT[e.channel]}`
-      : `${formatCents(e.amountCents)} · ${e.date} · ${e.label}`;
+      ? `${formatCents(e.amountCents)} · ${quando} · ${CH_SHORT[e.channel]}`
+      : `${formatCents(e.amountCents)} · ${quando} · ${e.label}`;
     label.style.flex = '1';
     const restore = document.createElement('button');
     restore.className = 'restore';

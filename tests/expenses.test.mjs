@@ -6,6 +6,7 @@ import {
   fixedEntry, fixedAmount, fixedTotal, variableItems, variableTotal, dayVariableItems,
   dailyFixedShare, workDaysInMonth, isOpenDay, dayFixedShare,
   dayBalance, monthBalance, breakEvenDay,
+  unexpectedItems, unexpectedTotal, unexpectedDate,
 } from '../js/expenses.js';
 
 const fixed = (amountCents, deletedAt = null) =>
@@ -109,6 +110,58 @@ test('conto del mese', () => {
   const b = monthBalance({ incomeCents: 300000, fixedCents: 135036, variableCents: 16500 });
   assert.equal(b.outflow, 151536);
   assert.equal(b.netCents, 148464);
+});
+
+test('conto del mese con impreviste: entrano nell\'uscita e nel netto', () => {
+  const b = monthBalance({
+    incomeCents: 300000, fixedCents: 135036, variableCents: 16500, unexpectedCents: 32000,
+  });
+  assert.equal(b.unexpectedCents, 32000);
+  assert.equal(b.outflow, 183536);
+  assert.equal(b.netCents, 116464);
+});
+
+// ---------- impreviste: voci del mese ----------
+
+const imprevista = (ym, amountCents, label = 'dentista', deletedAt = null, createdAt = 1) =>
+  ({ id: `${ym}-${amountCents}-${label}`, kind: 'unexp', label, amountCents, date: unexpectedDate(ym), createdAt, deletedAt });
+
+test('unexpectedDate ancora la riga al mese, non a un giorno di spesa', () => {
+  assert.equal(unexpectedDate('2026-07'), '2026-07-01');
+});
+
+test('le impreviste si vedono solo nel loro mese', () => {
+  const extras = [imprevista('2026-07', 32000), imprevista('2026-08', 18000, 'gomme')];
+  assert.deepEqual(unexpectedItems(extras, '2026-07').map((x) => x.label), ['dentista']);
+  assert.equal(unexpectedTotal(extras, '2026-07'), 32000);
+  assert.equal(unexpectedTotal(extras, '2026-08'), 18000);
+  assert.equal(unexpectedTotal(extras, '2026-09'), 0);
+});
+
+test('più impreviste nello stesso mese, in ordine di inserimento', () => {
+  const extras = [
+    imprevista('2026-07', 18000, 'gomme', null, 20),
+    imprevista('2026-07', 32000, 'dentista', null, 10),
+  ];
+  assert.deepEqual(unexpectedItems(extras, '2026-07').map((x) => x.label), ['dentista', 'gomme']);
+  assert.equal(unexpectedTotal(extras, '2026-07'), 50000);
+});
+
+test('imprevista cestinata: fuori dal totale, come le altre righe', () => {
+  const extras = [imprevista('2026-07', 32000, 'dentista', 99)];
+  assert.deepEqual(unexpectedItems(extras, '2026-07'), []);
+  assert.equal(unexpectedTotal(extras, '2026-07'), 0);
+});
+
+test('le impreviste non sono né fisse né spese di giornata', () => {
+  const extras = [fixed(135036), casa(90000), imprevista('2026-07', 32000)];
+  // la quota giornaliera esce dalle sole fisse: un imprevisto non la muove
+  assert.equal(fixedTotal(extras), 225036);
+  assert.equal(dayFixedShare(fixedTotal(extras), '2026-07-27'), 9001);
+  // e non compare fra le spese del giorno né fra le variabili del mese
+  assert.deepEqual(dayVariableItems(extras, '2026-07-01'), []);
+  assert.deepEqual(variableItems(extras, '2026-07'), []);
+  assert.equal(variableTotal(extras, '2026-07'), 0);
 });
 
 const perDay = (totals) => totals.map((total, i) => ({ day: i + 1, date: `2026-07-0${i + 1}`, total, visits: 0 }));

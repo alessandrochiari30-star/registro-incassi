@@ -39,13 +39,17 @@ function isValidEntry(e) {
       || (typeof e.deletedAt === 'number' && Number.isFinite(e.deletedAt)));
 }
 
-// Una uscita: fissa (nessuna data, vale ogni mese) o variabile
-// (legata a un giorno). Il campo 'extras' non c'era nei primi backup:
-// se manca, il file resta valido e semplicemente non porta uscite.
+// Una uscita: fissa (nessuna data, vale ogni mese), variabile (legata a
+// un giorno) o imprevista (legata al mese, data al primo del mese).
+// Il campo 'extras' non c'era nei primi backup: se manca, il file resta
+// valido e semplicemente non porta uscite.
+// Nota per il futuro: una versione vecchia dell'app non conosce 'unexp'
+// e rifiuterebbe l'intero file. Vale solo per un telefono rimasto
+// indietro con la cache del service worker.
 function isValidExtra(x) {
   return x !== null && typeof x === 'object'
     && typeof x.id === 'string' && x.id.length > 0
-    && (x.kind === 'fixed' || x.kind === 'var')
+    && (x.kind === 'fixed' || x.kind === 'var' || x.kind === 'unexp')
     && typeof x.label === 'string'
     && Number.isInteger(x.amountCents) && x.amountCents >= 0
     && (x.kind === 'fixed' ? (x.date === null || x.date === undefined) : DATE_RE.test(x.date))
